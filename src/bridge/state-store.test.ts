@@ -111,4 +111,19 @@ describe("BridgeStateStore conversation contexts", () => {
       messageThreadId: null,
     });
   });
+
+  it("requeues started prompts for retry", () => {
+    const { store } = createStore();
+    const promptId = store.enqueuePrompt("session-1", "thread-1", "normal", "Retry me");
+
+    store.markPromptStarted(promptId);
+    store.retryPrompt(promptId);
+
+    expect(store.getNextQueuedPrompt("session-1")).toMatchObject({
+      id: promptId,
+      status: "queued",
+      startedAt: null,
+      finishedAt: null,
+    });
+  });
 });
