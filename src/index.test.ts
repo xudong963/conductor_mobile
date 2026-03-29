@@ -360,10 +360,7 @@ describe("TelegramConductorBridge", () => {
           session: { id: string },
         ) => { chatId: number; messageThreadId: number | null } | null;
       }
-    ).getKnownSessionTopicLocation(
-      { chatId: 99, messageThreadId: null },
-      { id: "session-1" },
-    );
+    ).getKnownSessionTopicLocation({ chatId: 99, messageThreadId: null }, { id: "session-1" });
 
     expect(topicLocation).toEqual({ chatId: 99, messageThreadId: 77 });
   });
@@ -392,10 +389,7 @@ describe("TelegramConductorBridge", () => {
           session: { id: string; workspaceId: string; claudeSessionId: string | null },
         ) => Promise<{ chatId: number; messageThreadId: number | null } | null>;
       }
-    ).ensureSessionTopicLocation(
-      { chatId: 99, messageThreadId: null },
-      session,
-    );
+    ).ensureSessionTopicLocation({ chatId: 99, messageThreadId: null }, session);
 
     expect(topicLocation).toEqual({ chatId: 99, messageThreadId: 321 });
     expect(stateStore.updateConversationContext).toHaveBeenCalledWith(
