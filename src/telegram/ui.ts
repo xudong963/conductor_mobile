@@ -13,14 +13,17 @@ export function homeKeyboard(options?: { showStop?: boolean }): TelegramInlineKe
       { text: "New Chat Here", callback_data: "home:new" },
     ],
     [
+      { text: "New Workspace", callback_data: "home:new-workspace" },
       { text: "Switch Repo", callback_data: "home:workspaces" },
-      { text: "Switch Branch", callback_data: "home:branches" },
     ],
     [
+      { text: "Switch Branch", callback_data: "home:branches" },
       { text: "Switch Chat", callback_data: "home:sessions" },
-      { text: "Inbox", callback_data: "home:inbox" },
     ],
-    [{ text: "Help", callback_data: "home:help" }],
+    [
+      { text: "Inbox", callback_data: "home:inbox" },
+      { text: "Help", callback_data: "home:help" },
+    ],
   ];
   if (options?.showStop) {
     rows.splice(1, 0, [{ text: "Stop Current Turn", callback_data: "home:stop" }]);
@@ -68,13 +71,19 @@ export function sessionsKeyboard(sessions: ConductorSessionRef[]): TelegramInlin
   return rows;
 }
 
-export function branchesKeyboard(workspaces: WorkspaceRef[]): TelegramInlineKeyboard {
+export function branchesKeyboard(
+  workspaces: WorkspaceRef[],
+  options?: { newWorkspaceRepositoryId?: string | null },
+): TelegramInlineKeyboard {
   const rows = workspaces.map((workspace, index) => [
     {
       text: formatBranchButtonLabel(workspace, index),
       callback_data: `branch:${workspace.id}`,
     },
   ]);
+  if (options?.newWorkspaceRepositoryId) {
+    rows.push([{ text: "New Workspace Here", callback_data: `repo-new:${options.newWorkspaceRepositoryId}` }]);
+  }
   rows.push([{ text: "Back", callback_data: "back:home" }]);
   return rows;
 }

@@ -199,6 +199,7 @@ const BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "queue", description: "Show the current chat queue" },
   { command: "context", description: "Open the recent context viewer" },
   { command: "new", description: "Create a new chat with the next message" },
+  { command: "new_workspace", description: "Create a new workspace from the next message" },
   { command: "help", description: "Show help" },
 ];
 
@@ -219,6 +220,7 @@ function buildHelpText(): string {
     "/queue  Show the current chat queue",
     "/context [N]  Open the paginated recent context viewer",
     "/new  Make the next message create a new chat on the current branch",
+    "/new_workspace  Make the next message create a new workspace in the current repo",
     "/help  Show help",
     "",
     "You can also tap Help on the home screen.",
@@ -487,6 +489,12 @@ export class TelegramConductorBridge {
       return;
     }
 
+    if (data === "home:new-workspace") {
+      await this.telegram.answerCallbackQuery(callback.id);
+      await this.prepareNewWorkspace(location);
+      return;
+    }
+
     if (data === "home:stop") {
       const text = await this.interruptCurrentTurn(location, { suppressMessage: true });
       await this.telegram.answerCallbackQuery(callback.id, text);
@@ -520,6 +528,12 @@ export class TelegramConductorBridge {
     if (data.startsWith("repo:")) {
       await this.telegram.answerCallbackQuery(callback.id);
       await this.selectRepository(location, data.slice("repo:".length));
+      return;
+    }
+
+    if (data.startsWith("repo-new:")) {
+      await this.telegram.answerCallbackQuery(callback.id);
+      await this.prepareNewWorkspace(location, data.slice("repo-new:".length));
       return;
     }
 
@@ -600,6 +614,9 @@ export class TelegramConductorBridge {
         await this.safeSendMessage(location, "Your next message will create a new chat on the current branch.");
         return;
       }
+      case "/new_workspace":
+        await this.prepareNewWorkspace(location);
+        return;
       case "/help":
         await this.safeSendMessage(location, buildHelpText());
         return;
@@ -627,6 +644,11 @@ export class TelegramConductorBridge {
 
     if (context.composeMode === "new_session") {
       await this.createNewSession(location, text);
+      return;
+    }
+
+    if (context.composeMode === "new_workspace") {
+      await this.createNewWorkspace(location, text);
       return;
     }
 
@@ -715,7 +737,11 @@ export class TelegramConductorBridge {
     await this.showBranches(location, `Switched to repo: ${formatRepositoryLabel(workspaces[0])}`, repositoryId);
   }
 
-  private async selectBranch(location: TelegramConversationTarget, workspaceId: string): Promise<void> {
+  private async selectBranch(
+    location: TelegramConversationTarget,
+    workspaceId: string,
+    options?: { prefix?: string },
+  ): Promise<void> {
     const workspace = this.registry.getWorkspaceById(workspaceId);
     if (!workspace) {
       await this.safeSendMessage(location, "Workspace not found.");
@@ -741,9 +767,10 @@ export class TelegramConductorBridge {
     const workspaceName = formatWorkspaceOptionName(workspace);
     const branchName = formatBranchName(workspace);
     const prefix =
-      workspaceName === branchName
+      options?.prefix ??
+      (workspaceName === branchName
         ? `Switched to branch: ${branchName}`
-        : `Switched to branch: ${branchName}\nWorkspace: ${workspaceName}`;
+        : `Switched to branch: ${branchName}\nWorkspace: ${workspaceName}`);
 
     await this.showChats(location, prefix, workspace.id);
   }
@@ -914,7 +941,11 @@ export class TelegramConductorBridge {
       heading: "Select a branch:",
       prefix,
     });
-    await this.safeSendMessage(location, text, branchesKeyboard(workspaces));
+    await this.safeSendMessage(
+      location,
+      text,
+      branchesKeyboard(workspaces, { newWorkspaceRepositoryId: targetRepositoryId }),
+    );
   }
 
   private async showChats(location: TelegramConversationTarget, prefix?: string, workspaceId?: string): Promise<void> {
@@ -1211,6 +1242,105 @@ export class TelegramConductorBridge {
       }
       logger.error("failed to create new session", error);
       await this.safeSendMessage(location, "Failed to create a new chat.");
+    }
+  }
+
+  private async prepareNewWorkspace(
+    location: TelegramConversationTarget,
+    repositoryIdFromPicker?: string,
+  ): Promise<void> {
+    const context = this.stateStore.getConversationContext(location);
+    const repositoryId = repositoryIdFromPicker ?? this.resolveWorkspaceCreationRepositoryId(context);
+    if (!repositoryId) {
+      await this.showRepositories(location, "Select a repo and branch first.");
+      return;
+    }
+
+    const repository = this.registry.getRepositoryById(repositoryId);
+    if (!repository) {
+      await this.showRepositories(location, "Repo not found.");
+      return;
+    }
+
+    this.stateStore.setConversationComposeMode(location, "new_workspace", {
+      composeWorkspaceId: repositoryId,
+    });
+
+    await this.safeSendMessage(
+      location,
+      `Send the full branch name for the new workspace in ${formatRepositoryLabel(repository)}. It will be created from ${
+        repository.defaultBranch?.trim() || "master"
+      }.`,
+    );
+  }
+
+  private resolveWorkspaceCreationRepositoryId(
+    context: ReturnType<BridgeStateStore["getConversationContext"]>,
+  ): string | null {
+    const composeId = context.composeWorkspaceId?.trim();
+    if (composeId) {
+      const workspace = this.registry.getWorkspaceById(composeId);
+      if (workspace) {
+        return workspace.repositoryId;
+      }
+      if (this.registry.getRepositoryById(composeId)) {
+        return composeId;
+      }
+    }
+
+    if (!context.activeWorkspaceId) {
+      return null;
+    }
+
+    return this.registry.getWorkspaceById(context.activeWorkspaceId)?.repositoryId ?? null;
+  }
+
+  private async createNewWorkspace(location: TelegramConversationTarget, text: string): Promise<void> {
+    const requestedBranch = text
+      .split("\n")
+      .map((line) => line.trim())
+      .find(Boolean);
+
+    if (!requestedBranch) {
+      await this.safeSendMessage(location, "Send a branch name like feature/demo or xudong963/demo.");
+      return;
+    }
+
+    const context = this.stateStore.getConversationContext(location);
+    const repositoryId = this.resolveWorkspaceCreationRepositoryId(context);
+    if (!repositoryId) {
+      this.stateStore.clearConversationComposeMode(location);
+      await this.showRepositories(location, "Select a repo and branch first.");
+      return;
+    }
+
+    const existingWorkspace = this.registry.findWorkspaceByBranch(repositoryId, requestedBranch);
+    if (existingWorkspace) {
+      this.stateStore.clearConversationComposeMode(location);
+      await this.selectBranch(location, existingWorkspace.id, {
+        prefix: `Workspace already exists: ${formatBranchName(existingWorkspace)}`,
+      });
+      return;
+    }
+
+    try {
+      const workspace = this.registry.createWorkspace(repositoryId, requestedBranch);
+      this.stateStore.clearConversationComposeMode(location);
+      await this.selectBranch(location, workspace.id, {
+        prefix:
+          workspace.directoryName === formatBranchName(workspace)
+            ? `Created workspace: ${formatBranchName(workspace)}`
+            : `Created workspace: ${formatBranchName(workspace)}\nDirectory: ${workspace.directoryName}`,
+      });
+    } catch (error) {
+      const message = extractErrorMessage(error);
+      logger.error("failed to create workspace", {
+        chatId: location.chatId,
+        messageThreadId: location.messageThreadId,
+        requestedBranch,
+        error,
+      });
+      await this.safeSendMessage(location, `Failed to create workspace: ${message}`);
     }
   }
 

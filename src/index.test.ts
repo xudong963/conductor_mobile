@@ -26,10 +26,16 @@ function createBridge() {
     updateSessionStatus: vi.fn(),
   };
   const registry = {
+    createWorkspace: vi.fn(),
+    findWorkspaceByBranch: vi.fn(),
+    getRepositoryById: vi.fn(),
     findSessionByThreadId: vi.fn(),
     getSessionById: vi.fn(),
+    getWorkspaceById: vi.fn(),
   };
   const stateStore = {
+    clearConversationComposeMode: vi.fn(),
+    getConversationContext: vi.fn(),
     setTelegramCursor: vi.fn(),
     getSessionById: vi.fn(),
     listFollowingConversations: vi.fn(),
@@ -37,6 +43,7 @@ function createBridge() {
     markPromptStarted: vi.fn(),
     retryPrompt: vi.fn(),
     markPromptFinished: vi.fn(),
+    setConversationComposeMode: vi.fn(),
   };
   const telegram = {
     answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
@@ -209,6 +216,120 @@ describe("TelegramConductorBridge", () => {
 
     expect(telegram.sendMessage).toHaveBeenCalledTimes(1);
     expect(telegram.editMessageText).not.toHaveBeenCalled();
+  });
+
+  it("arms new-workspace mode on the current repo", async () => {
+    const { bridge, registry, stateStore, telegram } = createBridge();
+
+    stateStore.getConversationContext.mockReturnValue({
+      activeWorkspaceId: "workspace-1",
+      composeWorkspaceId: null,
+    });
+    registry.getWorkspaceById.mockReturnValue({
+      id: "workspace-1",
+      repositoryId: "repo-1",
+    });
+    registry.getRepositoryById.mockReturnValue({
+      id: "repo-1",
+      repositoryName: "conductor_mobile",
+      defaultBranch: "master",
+    });
+
+    await (
+      bridge as unknown as {
+        handleCommand: (location: { chatId: number; messageThreadId: number | null }, command: string) => Promise<void>;
+      }
+    ).handleCommand({ chatId: 99, messageThreadId: null }, "/new_workspace");
+
+    expect(stateStore.setConversationComposeMode).toHaveBeenCalledWith(
+      { chatId: 99, messageThreadId: null },
+      "new_workspace",
+      { composeWorkspaceId: "repo-1" },
+    );
+    expect(telegram.sendMessage).toHaveBeenCalledWith(
+      99,
+      "Send the full branch name for the new workspace in conductor_mobile. It will be created from master.",
+      {},
+    );
+  });
+
+  it("creates a workspace from compose mode and switches to it", async () => {
+    const { bridge, registry, stateStore } = createBridge();
+    const selectBranch = vi.fn().mockResolvedValue(undefined);
+
+    stateStore.getConversationContext.mockReturnValue({
+      activeWorkspaceId: "workspace-1",
+      activeSessionId: null,
+      composeMode: "new_workspace",
+      composeWorkspaceId: "repo-1",
+    });
+    registry.getRepositoryById.mockReturnValue({
+      id: "repo-1",
+      repositoryName: "conductor_mobile",
+      defaultBranch: "master",
+    });
+    registry.findWorkspaceByBranch.mockReturnValue(null);
+    registry.createWorkspace.mockReturnValue({
+      id: "workspace-2",
+      repositoryId: "repo-1",
+      directoryName: "berlin",
+      branch: "xudong963/berlin",
+    });
+
+    (bridge as unknown as { selectBranch: typeof selectBranch }).selectBranch = selectBranch;
+
+    await (
+      bridge as unknown as {
+        handlePlainText: (location: { chatId: number; messageThreadId: number | null }, text: string) => Promise<void>;
+      }
+    ).handlePlainText({ chatId: 99, messageThreadId: null }, "xudong963/berlin");
+
+    expect(registry.createWorkspace).toHaveBeenCalledWith("repo-1", "xudong963/berlin");
+    expect(stateStore.clearConversationComposeMode).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
+    expect(selectBranch).toHaveBeenCalledWith(
+      { chatId: 99, messageThreadId: null },
+      "workspace-2",
+      { prefix: "Created workspace: xudong963/berlin\nDirectory: berlin" },
+    );
+  });
+
+  it("switches to an existing workspace instead of creating a duplicate", async () => {
+    const { bridge, registry, stateStore } = createBridge();
+    const selectBranch = vi.fn().mockResolvedValue(undefined);
+
+    stateStore.getConversationContext.mockReturnValue({
+      activeWorkspaceId: "workspace-1",
+      activeSessionId: null,
+      composeMode: "new_workspace",
+      composeWorkspaceId: "repo-1",
+    });
+    registry.getRepositoryById.mockReturnValue({
+      id: "repo-1",
+      repositoryName: "conductor_mobile",
+      defaultBranch: "master",
+    });
+    registry.findWorkspaceByBranch.mockReturnValue({
+      id: "workspace-3",
+      repositoryId: "repo-1",
+      directoryName: "berlin",
+      branch: "xudong963/berlin",
+    });
+
+    (bridge as unknown as { selectBranch: typeof selectBranch }).selectBranch = selectBranch;
+
+    await (
+      bridge as unknown as {
+        handlePlainText: (location: { chatId: number; messageThreadId: number | null }, text: string) => Promise<void>;
+      }
+    ).handlePlainText({ chatId: 99, messageThreadId: null }, "xudong963/berlin");
+
+    expect(registry.createWorkspace).not.toHaveBeenCalled();
+    expect(stateStore.clearConversationComposeMode).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
+    expect(selectBranch).toHaveBeenCalledWith(
+      { chatId: 99, messageThreadId: null },
+      "workspace-3",
+      { prefix: "Workspace already exists: xudong963/berlin" },
+    );
   });
 
   it("does not re-edit the context viewer when paging stays at the oldest page", async () => {
