@@ -40,6 +40,8 @@ cp .env.example .env
 
 `TELEGRAM_ALLOWED_CHAT_IDS` 填你自己的 Telegram chat id，多个用逗号分隔。
 
+默认 `BRIDGE_DB_PATH` 是 `.context/bridge.db`。当前版本会在启动时自动创建这个目录，不需要你手动先建 `.context/`。
+
 ## Run
 
 ```bash
