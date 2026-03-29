@@ -18,6 +18,7 @@ interface DbSessionRow {
 }
 
 export class ConductorRegistryAdapter {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
   private readonly workspacesRoot: string;
   private readonly defaultFallbackModel: string;

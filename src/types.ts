@@ -2,13 +2,7 @@ export type ComposeMode = "none" | "new_session" | "plan_feedback" | "reply_requ
 
 export type QueueKind = "normal" | "new_session";
 
-export type SessionStatus =
-  | "idle"
-  | "working"
-  | "needs_user_input"
-  | "needs_plan_response"
-  | "error"
-  | "cancelling";
+export type SessionStatus = "idle" | "working" | "needs_user_input" | "needs_plan_response" | "error" | "cancelling";
 
 export interface WorkspaceRef {
   id: string;

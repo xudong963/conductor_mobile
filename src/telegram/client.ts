@@ -1,8 +1,4 @@
-import type {
-  TelegramInlineKeyboard,
-  TelegramSendMessageOptions,
-  TelegramUpdate,
-} from "../types.js";
+import type { TelegramInlineKeyboard, TelegramSendMessageOptions, TelegramUpdate } from "../types.js";
 
 export class TelegramClient {
   private readonly baseUrl: string;
