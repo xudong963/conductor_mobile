@@ -99,24 +99,12 @@ describe("ConductorRegistryAdapter", () => {
     runGit(["add", "README.md"], repositoryRoot);
     runGit(["commit", "-m", "initial"], repositoryRoot);
 
-    db.prepare(`INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`).run(
-      "repo-1",
-      "telegram-bridge",
-      repositoryRoot,
-      "master",
-      "2026-03-29T04:00:00.000Z",
-      "origin",
-      0,
-    );
-    db.prepare(`INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`).run(
-      "repo-2",
-      "other-repo",
-      "/repos/other-repo",
-      "master",
-      "2026-03-29T05:00:00.000Z",
-      "origin",
-      0,
-    );
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", "telegram-bridge", repositoryRoot, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-2", "other-repo", "/repos/other-repo", "master", "2026-03-29T05:00:00.000Z", "origin", 0);
 
     const insertWorkspace = db.prepare(`
       INSERT INTO workspaces (
@@ -236,15 +224,9 @@ describe("ConductorRegistryAdapter", () => {
       sourceRepoPath,
     );
 
-    db.prepare(`INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`).run(
-      "repo-1",
-      repositoryName,
-      sourceRepoPath,
-      "master",
-      "2026-03-29T04:00:00.000Z",
-      "origin",
-      0,
-    );
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", repositoryName, sourceRepoPath, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
 
     const insertWorkspace = db.prepare(`
       INSERT INTO workspaces (
@@ -313,23 +295,15 @@ describe("ConductorRegistryAdapter", () => {
     runGit(["add", "README.md"], sourceRepoPath);
     runGit(["commit", "-m", "initial"], sourceRepoPath);
 
-    db.prepare(`INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`).run(
-      "repo-1",
-      repositoryName,
-      sourceRepoPath,
-      "master",
-      "2026-03-29T04:00:00.000Z",
-      "origin",
-      0,
-    );
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", repositoryName, sourceRepoPath, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
 
     const workspace = adapter.createWorkspace("repo-1", "xudong963/berlin");
 
     expect(workspace.branch).toBe("xudong963/berlin");
     expect(workspace.directoryName).toBe("berlin");
-    expect(
-      fs.existsSync(path.join(tempDir, "workspaces", repositoryName, "berlin", ".git")),
-    ).toBeTruthy();
+    expect(fs.existsSync(path.join(tempDir, "workspaces", repositoryName, "berlin", ".git"))).toBeTruthy();
 
     const row = db
       .prepare(
@@ -377,15 +351,9 @@ describe("ConductorRegistryAdapter", () => {
     runGit(["add", "README.md"], sourceRepoPath);
     runGit(["commit", "-m", "initial"], sourceRepoPath);
 
-    db.prepare(`INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`).run(
-      "repo-1",
-      repositoryName,
-      sourceRepoPath,
-      "master",
-      "2026-03-29T04:00:00.000Z",
-      "origin",
-      0,
-    );
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", repositoryName, sourceRepoPath, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
     db.prepare(
       `
         INSERT INTO workspaces (

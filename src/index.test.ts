@@ -531,11 +531,9 @@ describe("TelegramConductorBridge", () => {
 
     expect(registry.createWorkspace).toHaveBeenCalledWith("repo-1", "xudong963/berlin");
     expect(stateStore.clearConversationComposeMode).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
-    expect(selectBranch).toHaveBeenCalledWith(
-      { chatId: 99, messageThreadId: null },
-      "workspace-2",
-      { prefix: "Created workspace: xudong963/berlin\nDirectory: berlin" },
-    );
+    expect(selectBranch).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null }, "workspace-2", {
+      prefix: "Created workspace: xudong963/berlin\nDirectory: berlin",
+    });
   });
 
   it("switches to an existing workspace instead of creating a duplicate", async () => {
@@ -570,11 +568,9 @@ describe("TelegramConductorBridge", () => {
 
     expect(registry.createWorkspace).not.toHaveBeenCalled();
     expect(stateStore.clearConversationComposeMode).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
-    expect(selectBranch).toHaveBeenCalledWith(
-      { chatId: 99, messageThreadId: null },
-      "workspace-3",
-      { prefix: "Workspace already exists: xudong963/berlin" },
-    );
+    expect(selectBranch).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null }, "workspace-3", {
+      prefix: "Workspace already exists: xudong963/berlin",
+    });
   });
 
   it("does not re-edit the context viewer when paging stays at the oldest page", async () => {

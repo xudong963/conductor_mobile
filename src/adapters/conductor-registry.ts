@@ -562,13 +562,17 @@ export class ConductorRegistryAdapter {
       return existingWorkspace;
     }
 
-    const directoryName = this.allocateWorkspaceDirectoryName(repositoryId, repository.repositoryName, normalizedBranch);
+    const directoryName = this.allocateWorkspaceDirectoryName(
+      repositoryId,
+      repository.repositoryName,
+      normalizedBranch,
+    );
     const workspacePath = path.join(this.workspacesRoot, repository.repositoryName, directoryName);
     const branchExistsLocally = this.refExists(repository.rootPath, `refs/heads/${normalizedBranch}`);
     const branchStartPoint = branchExistsLocally
       ? normalizedBranch
-      : this.findRemoteBranchRef(repository.rootPath, normalizedBranch, repository.remote) ??
-        this.resolveBaseBranchRef(repository.rootPath, repository.defaultBranch, repository.remote);
+      : (this.findRemoteBranchRef(repository.rootPath, normalizedBranch, repository.remote) ??
+        this.resolveBaseBranchRef(repository.rootPath, repository.defaultBranch, repository.remote));
 
     let worktreeCreated = false;
     try {
@@ -642,7 +646,11 @@ export class ConductorRegistryAdapter {
     }
   }
 
-  private findRemoteBranchRef(rootPath: string, branchName: string, preferredRemote: string | null | undefined): string | null {
+  private findRemoteBranchRef(
+    rootPath: string,
+    branchName: string,
+    preferredRemote: string | null | undefined,
+  ): string | null {
     let output: string;
     try {
       output = execFileSync("git", ["-C", rootPath, "for-each-ref", "--format=%(refname:short)", "refs/remotes"], {
