@@ -11,6 +11,7 @@ import {
   formatSessionPickerText,
   formatSessionStatus,
   formatStatusLine,
+  formatWorkspaceOptionName,
   sanitizeSessionTitle,
   truncate,
 } from "./text.js";
@@ -56,10 +57,40 @@ describe("formatBranchName", () => {
 });
 
 describe("formatBranchButtonLabel", () => {
-  it("numbers and truncates branch labels", () => {
-    expect(formatBranchButtonLabel({ branch: "feature/a-very-long-branch-name", directoryName: "moscow" }, 1, 18)).toBe(
-      "2. feature/a-very…",
-    );
+  it("shows branch names first and appends workspace titles", () => {
+    expect(
+      formatBranchButtonLabel(
+        {
+          prTitle: "Translate Telegram bridge copy to English",
+          branch: "feature/a-very-long-branch-name",
+          directoryName: "moscow",
+        },
+        1,
+        120,
+      ),
+    ).toBe("2. feature/a-very-long-branch-name · Translate Telegram bridge copy to English");
+  });
+});
+
+describe("formatWorkspaceOptionName", () => {
+  it("prefers PR titles when present", () => {
+    expect(
+      formatWorkspaceOptionName({
+        prTitle: "Fix Telegram repo list",
+        branch: "feature/demo",
+        directoryName: "moscow",
+      }),
+    ).toBe("Fix Telegram repo list");
+  });
+
+  it("falls back to directory names before branch names", () => {
+    expect(
+      formatWorkspaceOptionName({
+        prTitle: null,
+        branch: "feature/demo",
+        directoryName: "hyderabad",
+      }),
+    ).toBe("hyderabad");
   });
 });
 
@@ -90,8 +121,8 @@ describe("formatBranchPickerText", () => {
   it("renders branch previews with current marker", () => {
     const result = formatBranchPickerText(
       [
-        { id: "workspace-1", branch: "feature/demo", directoryName: "moscow" },
-        { id: "workspace-2", branch: null, directoryName: "spokane" },
+        { id: "workspace-1", prTitle: "Build login flow", branch: "feature/demo", directoryName: "moscow" },
+        { id: "workspace-2", prTitle: null, branch: null, directoryName: "spokane" },
       ],
       {
         activeWorkspaceId: "workspace-1",
@@ -101,6 +132,7 @@ describe("formatBranchPickerText", () => {
 
     expect(result).toContain("Switched to workspace: demo");
     expect(result).toContain("1. feature/demo");
+    expect(result).toContain("Build login flow");
     expect(result).toContain("Current");
     expect(result).toContain("Directory: moscow");
     expect(result).toContain("2. spokane");

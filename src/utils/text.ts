@@ -32,12 +32,35 @@ export function formatBranchName(workspace: Pick<WorkspaceRef, "branch" | "direc
   return directoryName || "No branch";
 }
 
-export function formatBranchButtonLabel(
-  workspace: Pick<WorkspaceRef, "branch" | "directoryName">,
-  index: number,
-  max = 28,
+export function formatWorkspaceOptionName(
+  workspace: Pick<WorkspaceRef, "prTitle" | "directoryName" | "branch"> | null | undefined,
 ): string {
-  return truncate(`${index + 1}. ${formatBranchName(workspace)}`, max);
+  if (!workspace) {
+    return "No workspace";
+  }
+
+  const prTitle = workspace.prTitle?.trim();
+  if (prTitle) {
+    return prTitle;
+  }
+
+  const directoryName = workspace.directoryName.trim();
+  if (directoryName) {
+    return directoryName;
+  }
+
+  return formatBranchName(workspace);
+}
+
+export function formatBranchButtonLabel(
+  workspace: Pick<WorkspaceRef, "prTitle" | "branch" | "directoryName">,
+  index: number,
+  max = 60,
+): string {
+  const branchName = formatBranchName(workspace);
+  const workspaceName = formatWorkspaceOptionName(workspace);
+  const label = workspaceName !== branchName ? `${branchName} · ${workspaceName}` : branchName;
+  return truncate(`${index + 1}. ${label}`, max);
 }
 
 export function formatSessionPickerText(
@@ -66,7 +89,7 @@ export function formatSessionPickerText(
 }
 
 export function formatBranchPickerText(
-  workspaces: Array<Pick<WorkspaceRef, "id" | "branch" | "directoryName">>,
+  workspaces: Array<Pick<WorkspaceRef, "id" | "prTitle" | "branch" | "directoryName">>,
   options?: {
     activeWorkspaceId?: string | null | undefined;
     heading?: string | undefined;
@@ -74,16 +97,27 @@ export function formatBranchPickerText(
   },
 ): string {
   const blocks = workspaces.map((workspace, index) => {
+    const branchName = formatBranchName(workspace);
+    const workspaceName = formatWorkspaceOptionName(workspace);
     const meta: string[] = [];
     if (workspace.id === options?.activeWorkspaceId) {
       meta.push("Current");
     }
 
-    const branchName = formatBranchName(workspace);
     const directoryName = workspace.directoryName.trim();
-    const details = directoryName && directoryName !== branchName ? `Directory: ${directoryName}` : null;
+    const details =
+      directoryName && directoryName !== workspaceName && directoryName !== branchName
+        ? `Directory: ${directoryName}`
+        : null;
 
-    return [`${index + 1}. ${truncate(branchName, 120)}`, meta.join(" · ") || null, details].filter(Boolean).join("\n");
+    return [
+      `${index + 1}. ${truncate(branchName, 120)}`,
+      workspaceName !== branchName ? truncate(workspaceName, 120) : null,
+      meta.join(" · ") || null,
+      details,
+    ]
+      .filter(Boolean)
+      .join("\n");
   });
 
   return [options?.prefix, options?.heading ?? "Select a branch:", ...blocks, "Tap a button below to choose."]
