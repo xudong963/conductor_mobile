@@ -572,6 +572,20 @@ export class BridgeStateStore {
       .run(id);
   }
 
+  retryPrompt(id: number): void {
+    this.db
+      .prepare(
+        `
+          UPDATE prompt_queue
+          SET status = 'queued',
+              started_at = NULL,
+              finished_at = NULL
+          WHERE id = ?
+        `,
+      )
+      .run(id);
+  }
+
   markPromptFinished(id: number, status: "finished" | "failed" | "cancelled"): void {
     this.db
       .prepare(

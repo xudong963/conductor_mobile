@@ -1,8 +1,79 @@
-import { describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 
-import { CodexAppServerAdapter } from "./codex-app-server.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-describe("CodexAppServerAdapter.resumeThread", () => {
+const { spawnMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+}));
+
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    spawn: spawnMock,
+  };
+});
+
+import { buildCodexChildEnv, CodexAppServerAdapter } from "./codex-app-server.js";
+
+function createFakeChild(options?: { deferWriteCallback?: boolean }): {
+  child: ChildProcessWithoutNullStreams;
+  stdinWrite: ReturnType<typeof vi.fn>;
+} {
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const stdinWrite = vi.fn((_payload: string, callback?: (error?: Error | null) => void) => {
+    if (!options?.deferWriteCallback) {
+      callback?.(null);
+    }
+    return true;
+  });
+
+  const child = Object.assign(new EventEmitter(), {
+    stdout,
+    stderr,
+    stdin: { write: stdinWrite },
+    kill: vi.fn(),
+  }) as unknown as ChildProcessWithoutNullStreams;
+
+  return { child, stdinWrite };
+}
+
+afterEach(() => {
+  spawnMock.mockReset();
+  vi.restoreAllMocks();
+});
+
+describe("buildCodexChildEnv", () => {
+  it("strips bridge-only environment variables before spawning codex", () => {
+    const childEnv = buildCodexChildEnv({
+      OPENAI_API_KEY: "keep-me",
+      TELEGRAM_BOT_TOKEN: "drop-me",
+      QUEUE_TICK_MS: "3000",
+    });
+
+    expect(childEnv.OPENAI_API_KEY).toBe("keep-me");
+    expect(childEnv.TELEGRAM_BOT_TOKEN).toBeUndefined();
+    expect(childEnv.QUEUE_TICK_MS).toBeUndefined();
+  });
+});
+
+describe("CodexAppServerAdapter", () => {
+  it("rejects start when the codex child emits an error", async () => {
+    const { child } = createFakeChild({ deferWriteCallback: true });
+    spawnMock.mockReturnValue(child);
+
+    const adapter = new CodexAppServerAdapter("/tmp/codex");
+    const startPromise = adapter.start();
+
+    await Promise.resolve();
+    child.emit("error", new Error("spawn ENOENT"));
+
+    await expect(startPromise).rejects.toThrow("spawn ENOENT");
+  });
+
   it("ignores missing rollout errors when explicitly allowed", async () => {
     const adapter = new CodexAppServerAdapter("/tmp/codex");
     const request = vi

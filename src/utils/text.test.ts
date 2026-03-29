@@ -222,11 +222,13 @@ describe("formatPlan", () => {
     const plan = [
       { step: "step1", status: "completed" },
       { step: "step2", status: "inProgress" },
+      { step: "step2b", status: "in_progress" },
       { step: "step3", status: "pending" },
     ];
     const result = formatPlan(plan);
     expect(result).toContain("[x] step1");
     expect(result).toContain("[~] step2");
+    expect(result).toContain("[~] step2b");
     expect(result).toContain("[ ] step3");
   });
 
@@ -253,14 +255,14 @@ describe("formatSessionContextEntry", () => {
   it("simplifies local markdown file links", () => {
     const result = formatSessionContextEntry({
       role: "user",
-      content: "Read [`prepare.py`](/Users/xudong/conductor/workspaces/autoresearch/bangalore/prepare.py#L30) first.",
+      content: "Read [`prepare.py`](/tmp/autoresearch/bangalore/prepare.py#L30) first.",
       sentAt: "2026-03-29T10:23:00.000Z",
       turnId: null,
       model: null,
     });
 
     expect(result).toContain("Read prepare.py:30 first.");
-    expect(result).not.toContain("/Users/xudong");
+    expect(result).not.toContain("/tmp/autoresearch");
     expect(result).not.toContain("[`prepare.py`]");
   });
 

@@ -436,7 +436,13 @@ export function formatPlan(plan: Array<{ step: string; status: string }>, explan
     lines.push("");
   }
   for (const item of plan) {
-    const marker = item.status === "completed" ? "x" : item.status === "inProgress" ? "~" : " ";
+    const normalizedStatus = item.status.trim().toLowerCase();
+    const marker =
+      normalizedStatus === "completed"
+        ? "x"
+        : normalizedStatus === "inprogress" || normalizedStatus === "in_progress"
+          ? "~"
+          : " ";
     lines.push(`- [${marker}] ${item.step}`);
   }
   return lines.join("\n").trim();
