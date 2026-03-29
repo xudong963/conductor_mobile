@@ -49,9 +49,9 @@ export function formatSessionPickerText(
   },
 ): string {
   const blocks = sessions.map((session, index) => {
-    const meta = [`状态: ${formatSessionStatus(session.status)}`];
+    const meta = [`Status: ${formatSessionStatus(session.status)}`];
     if (session.id === options?.activeSessionId) {
-      meta.push("当前");
+      meta.push("Current");
     }
     return [
       `${index + 1}. ${truncate(formatSessionTitle(session.title), 120)}`,
@@ -60,7 +60,7 @@ export function formatSessionPickerText(
     ].join("\n");
   });
 
-  return [options?.prefix, options?.heading ?? "选择一个 session：", ...blocks, "点下方按钮选择。"]
+  return [options?.prefix, options?.heading ?? "Select a session:", ...blocks, "Tap a button below to choose."]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -76,17 +76,17 @@ export function formatBranchPickerText(
   const blocks = workspaces.map((workspace, index) => {
     const meta: string[] = [];
     if (workspace.id === options?.activeWorkspaceId) {
-      meta.push("当前");
+      meta.push("Current");
     }
 
     const branchName = formatBranchName(workspace);
     const directoryName = workspace.directoryName.trim();
-    const details = directoryName && directoryName !== branchName ? `目录: ${directoryName}` : null;
+    const details = directoryName && directoryName !== branchName ? `Directory: ${directoryName}` : null;
 
     return [`${index + 1}. ${truncate(branchName, 120)}`, meta.join(" · ") || null, details].filter(Boolean).join("\n");
   });
 
-  return [options?.prefix, options?.heading ?? "选择一个 session：", ...blocks, "点下方按钮选择。"]
+  return [options?.prefix, options?.heading ?? "Select a branch:", ...blocks, "Tap a button below to choose."]
     .filter(Boolean)
     .join("\n\n");
 }

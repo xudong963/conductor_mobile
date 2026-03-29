@@ -72,17 +72,17 @@ describe("formatSessionPickerText", () => {
       ],
       {
         activeSessionId: "session-12345678",
-        prefix: "已切换到 workspace：demo",
+        prefix: "Switched to workspace: demo",
       },
     );
 
-    expect(result).toContain("已切换到 workspace：demo");
+    expect(result).toContain("Switched to workspace: demo");
     expect(result).toContain("1. Continue session chat");
-    expect(result).toContain("状态: idle · 当前");
+    expect(result).toContain("Status: idle · Current");
     expect(result).toContain("2. Untitled");
-    expect(result).toContain("状态: needs user input");
+    expect(result).toContain("Status: needs user input");
     expect(result).toContain("ID: session-");
-    expect(result).toContain("点下方按钮选择。");
+    expect(result).toContain("Tap a button below to choose.");
   });
 });
 
@@ -95,16 +95,16 @@ describe("formatBranchPickerText", () => {
       ],
       {
         activeWorkspaceId: "workspace-1",
-        prefix: "已切换到 workspace：demo",
+        prefix: "Switched to workspace: demo",
       },
     );
 
-    expect(result).toContain("已切换到 workspace：demo");
+    expect(result).toContain("Switched to workspace: demo");
     expect(result).toContain("1. feature/demo");
-    expect(result).toContain("当前");
-    expect(result).toContain("目录: moscow");
+    expect(result).toContain("Current");
+    expect(result).toContain("Directory: moscow");
     expect(result).toContain("2. spokane");
-    expect(result).toContain("点下方按钮选择。");
+    expect(result).toContain("Tap a button below to choose.");
   });
 });
 

@@ -134,7 +134,7 @@ export class TelegramBridgeService {
   private async handleIncomingMessage(message: TelegramMessage): Promise<void> {
     const chatId = message.chat.id;
     if (!this.isAllowed(chatId)) {
-      await this.telegram.sendMessage(chatId, "未授权账号，无法访问 Conductor。");
+      await this.telegram.sendMessage(chatId, "Unauthorized account. Access to Conductor is disabled.");
       return;
     }
     if (!message.text) {
@@ -157,7 +157,7 @@ export class TelegramBridgeService {
   private async handleCallback(query: TelegramCallbackQuery): Promise<void> {
     const chatId = query.message?.chat.id ?? query.from.id;
     if (!this.isAllowed(chatId)) {
-      await this.telegram.answerCallbackQuery(query.id, "未授权");
+      await this.telegram.answerCallbackQuery(query.id, "Unauthorized");
       return;
     }
 
@@ -169,20 +169,20 @@ export class TelegramBridgeService {
       } else if (data === "home:new") {
         const ctx = this.stateStore.getChatContext(chatId);
         if (!ctx.activeWorkspaceId) {
-          await this.showWorkspaces(chatId, "先选 workspace，再创建新会话。");
+          await this.showWorkspaces(chatId, "Select a workspace before creating a new session.");
         } else {
           this.stateStore.setComposeMode(chatId, "new_session", { composeWorkspaceId: ctx.activeWorkspaceId });
           await this.telegram.sendMessage(
             chatId,
-            "New Chat Here 已激活。下一条消息会在当前 workspace 创建新 session。",
+            "New Chat Here is active. Your next message will create a new session in the current workspace.",
           );
         }
       } else if (data === "home:sessions") {
         await this.showSessions(chatId);
       } else if (data === "home:branches") {
-        await this.showWorkspaces(chatId, "选择 branch");
+        await this.showWorkspaces(chatId, "Select a branch");
       } else if (data === "home:workspaces") {
-        await this.showWorkspaces(chatId, "选择 repo");
+        await this.showWorkspaces(chatId, "Select a repo");
       } else if (data === "home:inbox") {
         await this.showInbox(chatId);
       } else if (data === "back:home") {
@@ -203,7 +203,7 @@ export class TelegramBridgeService {
       await this.telegram.answerCallbackQuery(query.id);
     } catch (error) {
       logger.error("callback handling failed", { data, error });
-      await this.telegram.answerCallbackQuery(query.id, "操作失败");
+      await this.telegram.answerCallbackQuery(query.id, "Action failed");
     }
   }
 
@@ -216,10 +216,10 @@ export class TelegramBridgeService {
         break;
       case "/repos":
       case "/workspaces":
-        await this.showWorkspaces(chatId, "选择 repo");
+        await this.showWorkspaces(chatId, "Select a repo");
         break;
       case "/branches":
-        await this.showWorkspaces(chatId, "选择 branch");
+        await this.showWorkspaces(chatId, "Select a branch");
         break;
       case "/chats":
       case "/sessions":
@@ -228,11 +228,14 @@ export class TelegramBridgeService {
       case "/new": {
         const ctx = this.stateStore.getChatContext(chatId);
         if (!ctx.activeWorkspaceId) {
-          await this.showWorkspaces(chatId, "先选 workspace，再创建新会话。");
+          await this.showWorkspaces(chatId, "Select a workspace before creating a new session.");
           return;
         }
         this.stateStore.setComposeMode(chatId, "new_session", { composeWorkspaceId: ctx.activeWorkspaceId });
-        await this.telegram.sendMessage(chatId, "下一条消息会创建当前 workspace 下的新 session。");
+        await this.telegram.sendMessage(
+          chatId,
+          "Your next message will create a new session in the current workspace.",
+        );
         break;
       }
       case "/inbox":
@@ -243,7 +246,7 @@ export class TelegramBridgeService {
         break;
       case "/cancel":
         this.stateStore.clearComposeMode(chatId);
-        await this.telegram.sendMessage(chatId, "已退出一次性输入模式。");
+        await this.telegram.sendMessage(chatId, "Exited one-shot input mode.");
         break;
       case "/help":
       default:
@@ -258,7 +261,7 @@ export class TelegramBridgeService {
             "/queue",
             "/cancel",
             "",
-            "默认直接发文本即可继续当前 session。",
+            "Send text directly to continue the current session.",
           ].join("\n"),
         );
         break;
@@ -271,7 +274,7 @@ export class TelegramBridgeService {
     if (ctx.composeMode === "new_session") {
       const workspaceId = ctx.composeWorkspaceId ?? ctx.activeWorkspaceId;
       if (!workspaceId) {
-        await this.showWorkspaces(chatId, "请先选择 workspace。");
+        await this.showWorkspaces(chatId, "Please select a workspace first.");
         return;
       }
       await this.createNewSession(chatId, workspaceId, text);
@@ -290,7 +293,7 @@ export class TelegramBridgeService {
 
     const resolved = await this.ensureContextSession(chatId, ctx);
     if (!resolved.session) {
-      await this.showWorkspaces(chatId, "还没有当前 session，先选 workspace。");
+      await this.showWorkspaces(chatId, "There is no current session yet. Select a workspace first.");
       return;
     }
 
@@ -300,19 +303,23 @@ export class TelegramBridgeService {
   private async routeTextToSession(chatId: number, session: ConductorSessionRef, text: string): Promise<void> {
     const runtime = this.ensureRuntime(session);
     if (!session.claudeSessionId) {
-      await this.telegram.sendMessage(chatId, "这个 session 缺少底层 thread id，无法继续。");
+      await this.telegram.sendMessage(chatId, "This session is missing its underlying thread ID and cannot continue.");
       return;
     }
 
     if (runtime.waitingPlan || session.status === "needs_plan_response") {
-      await this.telegram.sendMessage(chatId, "当前回合在等你确认计划，请点 Approve Plan 或 Revise Plan。", {
-        reply_markup: { inline_keyboard: planKeyboard() },
-      });
+      await this.telegram.sendMessage(
+        chatId,
+        "This turn is waiting for plan confirmation. Tap Approve Plan or Revise Plan.",
+        {
+          reply_markup: { inline_keyboard: planKeyboard() },
+        },
+      );
       return;
     }
 
     if (runtime.waitingUserInput || session.status === "needs_user_input") {
-      await this.telegram.sendMessage(chatId, "当前回合在等你补充输入，请点 Reply Now。", {
+      await this.telegram.sendMessage(chatId, "This turn is waiting for more input. Tap Reply Now.", {
         reply_markup: { inline_keyboard: replyKeyboard() },
       });
       return;
@@ -320,7 +327,7 @@ export class TelegramBridgeService {
 
     if (runtime.activeTurnId || (session.status === "working" && runtime.activeTurnId === null)) {
       this.stateStore.enqueuePrompt(session.id, session.claudeSessionId, "normal", text);
-      await this.telegram.sendMessage(chatId, "当前 session 正在工作，新消息已入队。");
+      await this.telegram.sendMessage(chatId, "The current session is working. Your message has been queued.");
       return;
     }
 
@@ -363,14 +370,14 @@ export class TelegramBridgeService {
     this.ensureRuntime(session);
     await this.telegram.sendMessage(
       chatId,
-      `已新建 session: ${session.title ?? session.id.slice(0, 8)}，开始执行首轮。`,
+      `Created session: ${session.title ?? session.id.slice(0, 8)}. Starting the first turn.`,
     );
 
     try {
       await this.startPrompt(session, openingPrompt, null);
     } catch (error) {
       this.mirror.updateSessionStatus(session.id, "error");
-      await this.telegram.sendMessage(chatId, `首轮执行失败：${extractHumanText(error)}`);
+      await this.telegram.sendMessage(chatId, `The first turn failed: ${extractHumanText(error)}`);
     }
   }
 
@@ -378,7 +385,7 @@ export class TelegramBridgeService {
     const ctx = this.stateStore.getChatContext(chatId);
     if (!ctx.composeTargetSessionId || !ctx.composeTargetThreadId || !ctx.composeTargetTurnId) {
       this.stateStore.clearComposeMode(chatId);
-      await this.telegram.sendMessage(chatId, "没有可继续的目标回合，已退出输入模式。");
+      await this.telegram.sendMessage(chatId, "There is no target turn to continue. Exited input mode.");
       return;
     }
 
@@ -395,7 +402,7 @@ export class TelegramBridgeService {
       runtime.waitingUserInput = false;
     }
     this.mirror.updateSessionStatus(ctx.composeTargetSessionId, "working");
-    await this.telegram.sendMessage(chatId, mode === "plan_feedback" ? "已提交计划修改意见。" : "已提交输入。");
+    await this.telegram.sendMessage(chatId, mode === "plan_feedback" ? "Submitted plan feedback." : "Submitted input.");
   }
 
   private async showHome(chatId: number): Promise<void> {
@@ -411,9 +418,9 @@ export class TelegramBridgeService {
       session?.status ?? null,
     );
 
-    const modeText = ctx.composeMode === "none" ? "" : `\nmode: ${ctx.composeMode} (下一条文本生效后自动退出)\n`;
+    const modeText = ctx.composeMode === "none" ? "" : `\nmode: ${ctx.composeMode} (exits after the next message)\n`;
 
-    const text = [`Home`, statusLine, modeText, `发送文本可继续当前 session。`].join("\n");
+    const text = ["Home", statusLine, modeText, "Send text to continue the current session."].join("\n");
     await this.telegram.sendMessage(chatId, text, {
       reply_markup: { inline_keyboard: homeKeyboard() },
     });
@@ -422,7 +429,7 @@ export class TelegramBridgeService {
   private async showWorkspaces(chatId: number, title: string): Promise<void> {
     const workspaces = this.registry.listWorkspaces(this.config.pageSize);
     if (workspaces.length === 0) {
-      await this.telegram.sendMessage(chatId, "没有可用 workspace。");
+      await this.telegram.sendMessage(chatId, "No workspaces are available.");
       return;
     }
     await this.telegram.sendMessage(chatId, title, {
@@ -433,19 +440,19 @@ export class TelegramBridgeService {
   private async showSessions(chatId: number): Promise<void> {
     const ctx = this.stateStore.getChatContext(chatId);
     if (!ctx.activeWorkspaceId) {
-      await this.showWorkspaces(chatId, "先选择 workspace");
+      await this.showWorkspaces(chatId, "Select a workspace first.");
       return;
     }
     const sessions = this.registry.listSessions(ctx.activeWorkspaceId, this.config.pageSize);
     if (sessions.length === 0) {
-      await this.telegram.sendMessage(chatId, "当前 workspace 没有 session。");
+      await this.telegram.sendMessage(chatId, "The current workspace has no sessions.");
       return;
     }
     await this.telegram.sendMessage(
       chatId,
       formatSessionPickerText(sessions, {
         activeSessionId: ctx.activeSessionId,
-        heading: "选择 session",
+        heading: "Select a session",
       }),
       {
         reply_markup: { inline_keyboard: sessionsKeyboard(sessions) },
@@ -456,7 +463,7 @@ export class TelegramBridgeService {
   private async showInbox(chatId: number): Promise<void> {
     const sessions = this.registry.getInboxSessions(this.config.pageSize);
     if (sessions.length === 0) {
-      await this.telegram.sendMessage(chatId, "Inbox 为空。");
+      await this.telegram.sendMessage(chatId, "Inbox is empty.");
       return;
     }
     await this.telegram.sendMessage(chatId, "Inbox", {
@@ -467,12 +474,12 @@ export class TelegramBridgeService {
   private async showQueue(chatId: number): Promise<void> {
     const ctx = this.stateStore.getChatContext(chatId);
     if (!ctx.activeSessionId) {
-      await this.telegram.sendMessage(chatId, "当前没有 session。");
+      await this.telegram.sendMessage(chatId, "There is no current session.");
       return;
     }
     const items = this.stateStore.listQueueForSession(ctx.activeSessionId, 12);
     if (items.length === 0) {
-      await this.telegram.sendMessage(chatId, "当前队列为空。");
+      await this.telegram.sendMessage(chatId, "The current queue is empty.");
       return;
     }
     const lines = items.map((item) => `#${item.id} [${item.status}] ${truncate(item.text, 90).replaceAll("\n", " ")}`);
@@ -482,7 +489,7 @@ export class TelegramBridgeService {
   private async selectWorkspace(chatId: number, workspaceId: string): Promise<void> {
     const workspace = this.registry.getWorkspaceById(workspaceId);
     if (!workspace) {
-      await this.telegram.sendMessage(chatId, "workspace 不存在。");
+      await this.telegram.sendMessage(chatId, "Workspace not found.");
       return;
     }
     const sessionId = workspace.activeSessionId;
@@ -504,7 +511,7 @@ export class TelegramBridgeService {
   private async selectSession(chatId: number, sessionId: string): Promise<void> {
     const session = this.registry.getSessionById(sessionId);
     if (!session) {
-      await this.telegram.sendMessage(chatId, "session 不存在。");
+      await this.telegram.sendMessage(chatId, "Session not found.");
       return;
     }
     this.stateStore.updateChatContext(chatId, {
@@ -522,12 +529,12 @@ export class TelegramBridgeService {
     const ctx = this.stateStore.getChatContext(chatId);
     const session = ctx.activeSessionId ? this.registry.getSessionById(ctx.activeSessionId) : null;
     if (!session || !session.claudeSessionId) {
-      await this.telegram.sendMessage(chatId, "当前没有可操作 session。");
+      await this.telegram.sendMessage(chatId, "There is no actionable session.");
       return;
     }
     const runtime = this.ensureRuntime(session);
     if (!runtime.activeTurnId) {
-      await this.telegram.sendMessage(chatId, "当前没有活跃 turn。");
+      await this.telegram.sendMessage(chatId, "There is no active turn.");
       return;
     }
     this.stateStore.setComposeMode(chatId, "plan_feedback", {
@@ -535,19 +542,22 @@ export class TelegramBridgeService {
       composeTargetThreadId: session.claudeSessionId,
       composeTargetTurnId: runtime.activeTurnId,
     });
-    await this.telegram.sendMessage(chatId, "已进入 Revise Plan 模式。下一条文本将作为计划反馈。");
+    await this.telegram.sendMessage(
+      chatId,
+      "Entered Revise Plan mode. Your next message will be sent as plan feedback.",
+    );
   }
 
   private async enterReplyRequiredMode(chatId: number): Promise<void> {
     const ctx = this.stateStore.getChatContext(chatId);
     const session = ctx.activeSessionId ? this.registry.getSessionById(ctx.activeSessionId) : null;
     if (!session || !session.claudeSessionId) {
-      await this.telegram.sendMessage(chatId, "当前没有可操作 session。");
+      await this.telegram.sendMessage(chatId, "There is no actionable session.");
       return;
     }
     const runtime = this.ensureRuntime(session);
     if (!runtime.activeTurnId) {
-      await this.telegram.sendMessage(chatId, "当前没有活跃 turn。");
+      await this.telegram.sendMessage(chatId, "There is no active turn.");
       return;
     }
     this.stateStore.setComposeMode(chatId, "reply_required", {
@@ -555,19 +565,19 @@ export class TelegramBridgeService {
       composeTargetThreadId: session.claudeSessionId,
       composeTargetTurnId: runtime.activeTurnId,
     });
-    await this.telegram.sendMessage(chatId, "已进入 Reply 模式。下一条文本会直接回复当前请求。");
+    await this.telegram.sendMessage(chatId, "Entered Reply mode. Your next message will be sent as a direct reply.");
   }
 
   private async approvePlan(chatId: number): Promise<void> {
     const ctx = this.stateStore.getChatContext(chatId);
     const session = ctx.activeSessionId ? this.registry.getSessionById(ctx.activeSessionId) : null;
     if (!session || !session.claudeSessionId) {
-      await this.telegram.sendMessage(chatId, "当前没有可操作 session。");
+      await this.telegram.sendMessage(chatId, "There is no actionable session.");
       return;
     }
     const runtime = this.ensureRuntime(session);
     if (!runtime.activeTurnId) {
-      await this.telegram.sendMessage(chatId, "没有可批准的计划回合。");
+      await this.telegram.sendMessage(chatId, "There is no approvable plan turn.");
       return;
     }
     await this.codex.steerTurn({
@@ -577,7 +587,7 @@ export class TelegramBridgeService {
     });
     runtime.waitingPlan = false;
     this.mirror.updateSessionStatus(session.id, "working");
-    await this.telegram.sendMessage(chatId, "计划已批准，已进入实现阶段。");
+    await this.telegram.sendMessage(chatId, "Plan approved. Moving to implementation.");
   }
 
   private async startPrompt(session: ConductorSessionRef, text: string, queueItemId: number | null): Promise<void> {
@@ -652,7 +662,7 @@ export class TelegramBridgeService {
       } catch (error) {
         this.stateStore.markPromptFinished(queueItem.id, "failed");
         this.mirror.updateSessionStatus(session.id, "error");
-        await this.notifyFollowers(session.id, `队列任务失败：${extractHumanText(error)}`);
+        await this.notifyFollowers(session.id, `Queued task failed: ${extractHumanText(error)}`);
       }
     } finally {
       this.queueLocks.delete(sessionId);
@@ -750,7 +760,7 @@ export class TelegramBridgeService {
     );
     this.mirror.updateSessionStatus(session.id, "needs_plan_response");
 
-    const text = runtime.planText ? `需要计划确认：\n${runtime.planText}` : "需要计划确认。";
+    const text = runtime.planText ? `Plan approval required:\n${runtime.planText}` : "Plan approval required.";
     await this.notifyFollowers(session.id, text, planKeyboard());
   }
 
@@ -772,7 +782,7 @@ export class TelegramBridgeService {
     const question = extractHumanText(params);
     await this.notifyFollowers(
       session.id,
-      question ? `需要你的输入：\n${question}` : "当前回合需要你的输入。",
+      question ? `Input required:\n${question}` : "This turn needs your input.",
       replyKeyboard(),
     );
   }
@@ -850,7 +860,7 @@ export class TelegramBridgeService {
       runtime.currentQueueItemId = null;
     }
     if (failed && turn.error?.message) {
-      await this.notifyFollowers(session.id, `回合失败：${turn.error.message}`);
+      await this.notifyFollowers(session.id, `Turn failed: ${turn.error.message}`);
     }
 
     if (!runtime.waitingPlan && !runtime.waitingUserInput) {

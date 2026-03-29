@@ -110,15 +110,15 @@ function normalizeCommand(input: string): string {
 }
 
 function selectedRepositoryLabel(workspace: Pick<WorkspaceRef, "repositoryName"> | null | undefined): string {
-  return workspace ? formatRepositoryLabel(workspace) : "未选择";
+  return workspace ? formatRepositoryLabel(workspace) : "Not selected";
 }
 
 function selectedBranchLabel(workspace: Pick<WorkspaceRef, "branch" | "directoryName"> | null | undefined): string {
-  return workspace ? formatBranchName(workspace) : "未选择";
+  return workspace ? formatBranchName(workspace) : "Not selected";
 }
 
 function selectedChatLabel(session: Pick<ConductorSessionRef, "title"> | null | undefined): string {
-  return session ? formatSessionTitle(session.title) : "未选择";
+  return session ? formatSessionTitle(session.title) : "Not selected";
 }
 
 class TelegramConductorBridge {
@@ -211,7 +211,9 @@ class TelegramConductorBridge {
           });
           const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id ?? null;
           if (chatId) {
-            await this.safeSendMessage(chatId, "处理这条消息时失败了，请重试一次。").catch(() => undefined);
+            await this.safeSendMessage(chatId, "Failed to process that message. Please try again.").catch(
+              () => undefined,
+            );
           }
         } finally {
           this.stateStore.setTelegramCursor(update.update_id);
@@ -238,11 +240,11 @@ class TelegramConductorBridge {
 
   private async handleMessage(message: TelegramMessage): Promise<void> {
     if (!this.isAuthorized(message.chat.id)) {
-      await this.safeSendMessage(message.chat.id, "未授权。");
+      await this.safeSendMessage(message.chat.id, "Unauthorized.");
       return;
     }
     if (message.chat.type !== "private") {
-      await this.safeSendMessage(message.chat.id, "当前只支持 Telegram 私聊。");
+      await this.safeSendMessage(message.chat.id, "Only Telegram private chats are supported.");
       return;
     }
     if (!message.text) {
@@ -268,7 +270,7 @@ class TelegramConductorBridge {
       return;
     }
     if (!this.isAuthorized(chatId)) {
-      await this.telegram.answerCallbackQuery(callback.id, "未授权");
+      await this.telegram.answerCallbackQuery(callback.id, "Unauthorized");
       return;
     }
 
@@ -304,13 +306,13 @@ class TelegramConductorBridge {
       if (!session) {
         const context = this.stateStore.getChatContext(chatId);
         if (context.activeWorkspaceId) {
-          await this.showChats(chatId, "先选一个 chat。");
+          await this.showChats(chatId, "Select a chat first.");
         } else {
-          await this.showRepositories(chatId, "先选一个 repo 和 branch，再选一个 chat。");
+          await this.showRepositories(chatId, "Select a repo and branch before selecting a chat.");
         }
         return;
       }
-      await this.showHome(chatId, `当前继续目标：${formatSessionTitle(session.title)}`);
+      await this.showHome(chatId, `Continuing: ${formatSessionTitle(session.title)}`);
       return;
     }
 
@@ -318,13 +320,13 @@ class TelegramConductorBridge {
       await this.telegram.answerCallbackQuery(callback.id);
       const context = this.stateStore.getChatContext(chatId);
       if (!context.activeWorkspaceId) {
-        await this.showRepositories(chatId, "先选一个 repo 和 branch，再创建新的 chat。");
+        await this.showRepositories(chatId, "Select a repo and branch before creating a new chat.");
         return;
       }
       this.stateStore.setComposeMode(chatId, "new_session", {
         composeWorkspaceId: context.activeWorkspaceId,
       });
-      await this.safeSendMessage(chatId, "下一条文本会在当前 branch 创建一个新的 chat。");
+      await this.safeSendMessage(chatId, "Your next message will create a new chat on the current branch.");
       return;
     }
 
@@ -386,11 +388,11 @@ class TelegramConductorBridge {
         await this.selectBranch(chatId, id);
         return;
       }
-      await this.safeSendMessage(chatId, "找不到这个 chat。");
+      await this.safeSendMessage(chatId, "Chat not found.");
       return;
     }
 
-    await this.telegram.answerCallbackQuery(callback.id, "暂未实现");
+    await this.telegram.answerCallbackQuery(callback.id, "Not implemented yet");
   }
 
   private async handleCommand(chatId: number, rawCommand: string): Promise<void> {
@@ -423,20 +425,20 @@ class TelegramConductorBridge {
       case "/new": {
         const context = this.stateStore.getChatContext(chatId);
         if (!context.activeWorkspaceId) {
-          await this.showRepositories(chatId, "先选一个 repo 和 branch，再创建新的 chat。");
+          await this.showRepositories(chatId, "Select a repo and branch before creating a new chat.");
           return;
         }
         this.stateStore.setComposeMode(chatId, "new_session", {
           composeWorkspaceId: context.activeWorkspaceId,
         });
-        await this.safeSendMessage(chatId, "下一条文本会在当前 branch 创建新的 chat。");
+        await this.safeSendMessage(chatId, "Your next message will create a new chat on the current branch.");
         return;
       }
       case "/help":
         await this.safeSendMessage(
           chatId,
           [
-            "可用命令：",
+            "Available commands:",
             "/home",
             "/repos",
             "/branches",
@@ -449,12 +451,12 @@ class TelegramConductorBridge {
             "/new",
             "/help",
             "",
-            "普通文本默认继续当前选中的 chat。",
+            "Plain text continues the currently selected chat.",
           ].join("\n"),
         );
         return;
       default:
-        await this.safeSendMessage(chatId, `未知命令：${command}`);
+        await this.safeSendMessage(chatId, `Unknown command: ${command}`);
     }
   }
 
@@ -476,7 +478,7 @@ class TelegramConductorBridge {
     }
 
     if (context.composeMode === "plan_feedback") {
-      await this.sendSteerFromContext(chatId, text, "已发送计划修改意见。");
+      await this.sendSteerFromContext(chatId, text, "Plan feedback sent.");
       return;
     }
 
@@ -489,16 +491,19 @@ class TelegramConductorBridge {
         }
       }
       this.stateStore.clearComposeMode(chatId);
-      await this.safeSendMessage(chatId, "当前没有待回答的问题。");
+      await this.safeSendMessage(chatId, "There is no pending question right now.");
       return;
     }
 
     if (!session) {
       if (context.activeWorkspaceId) {
-        await this.showHome(chatId, "当前 branch 没有可继续的 chat。点 New Chat Here 创建一个新的 Conductor chat。");
+        await this.showHome(
+          chatId,
+          "There is no chat to continue on the current branch. Tap New Chat Here to create one.",
+        );
         return;
       }
-      await this.showRepositories(chatId, "先选 repo、branch 和 chat。");
+      await this.showRepositories(chatId, "Select a repo, branch, and chat first.");
       return;
     }
 
@@ -527,17 +532,17 @@ class TelegramConductorBridge {
   private async selectRepository(chatId: number, repositoryId: string): Promise<void> {
     const workspaces = this.registry.listWorkspacesForRepository(repositoryId, config.pageSize);
     if (workspaces.length === 0) {
-      await this.safeSendMessage(chatId, "找不到这个 repo。");
+      await this.safeSendMessage(chatId, "Repo not found.");
       return;
     }
 
-    await this.showBranches(chatId, `已切换到 repo：${formatRepositoryLabel(workspaces[0])}`, repositoryId);
+    await this.showBranches(chatId, `Switched to repo: ${formatRepositoryLabel(workspaces[0])}`, repositoryId);
   }
 
   private async selectBranch(chatId: number, workspaceId: string): Promise<void> {
     const workspace = this.registry.getWorkspaceById(workspaceId);
     if (!workspace) {
-      await this.safeSendMessage(chatId, "找不到这个 branch。");
+      await this.safeSendMessage(chatId, "Branch not found.");
       return;
     }
 
@@ -553,13 +558,13 @@ class TelegramConductorBridge {
     }
     this.stateStore.clearComposeMode(chatId);
 
-    await this.showChats(chatId, `已切换到 branch：${formatBranchName(workspace)}`, workspace.id);
+    await this.showChats(chatId, `Switched to branch: ${formatBranchName(workspace)}`, workspace.id);
   }
 
   private async selectChat(chatId: number, sessionId: string): Promise<void> {
     const session = this.registry.getSessionById(sessionId);
     if (!session) {
-      await this.safeSendMessage(chatId, "找不到这个 chat。");
+      await this.safeSendMessage(chatId, "Chat not found.");
       return;
     }
 
@@ -571,7 +576,7 @@ class TelegramConductorBridge {
       this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
     }
 
-    await this.showHome(chatId, `已切换到 chat：${formatSessionTitle(session.title)}`);
+    await this.showHome(chatId, `Switched to chat: ${formatSessionTitle(session.title)}`);
   }
 
   private async showHome(chatId: number, prefix?: string): Promise<void> {
@@ -597,10 +602,10 @@ class TelegramConductorBridge {
   private async showRepositories(chatId: number, prefix?: string): Promise<void> {
     const repositories = this.registry.listRepositories(config.pageSize);
     if (repositories.length === 0) {
-      await this.safeSendMessage(chatId, "没有可用的 repo。");
+      await this.safeSendMessage(chatId, "No repos are available.");
       return;
     }
-    const text = [prefix, "选择一个 repo："].filter(Boolean).join("\n\n");
+    const text = [prefix, "Select a repo:"].filter(Boolean).join("\n\n");
     await this.safeSendMessage(chatId, text, repositoriesKeyboard(repositories));
   }
 
@@ -611,13 +616,13 @@ class TelegramConductorBridge {
       : null;
     const targetRepositoryId = repositoryId ?? currentWorkspace?.repositoryId ?? null;
     if (!targetRepositoryId) {
-      await this.showRepositories(chatId, prefix ?? "先选一个 repo。");
+      await this.showRepositories(chatId, prefix ?? "Select a repo first.");
       return;
     }
 
     const workspaces = this.registry.listWorkspacesForRepository(targetRepositoryId, config.pageSize);
     if (workspaces.length === 0) {
-      await this.safeSendMessage(chatId, `${prefix ? `${prefix}\n\n` : ""}当前 repo 下没有 branch。`);
+      await this.safeSendMessage(chatId, `${prefix ? `${prefix}\n\n` : ""}There are no branches in the current repo.`);
       return;
     }
 
@@ -625,7 +630,7 @@ class TelegramConductorBridge {
       currentWorkspace && currentWorkspace.repositoryId === targetRepositoryId ? currentWorkspace.id : null;
     const text = formatBranchPickerText(workspaces, {
       activeWorkspaceId,
-      heading: "选择一个 branch：",
+      heading: "Select a branch:",
       prefix,
     });
     await this.safeSendMessage(chatId, text, branchesKeyboard(workspaces));
@@ -635,13 +640,13 @@ class TelegramConductorBridge {
     const context = this.stateStore.getChatContext(chatId);
     const targetWorkspaceId = workspaceId ?? context.activeWorkspaceId ?? null;
     if (!targetWorkspaceId) {
-      await this.showRepositories(chatId, prefix ?? "先选一个 repo 和 branch。");
+      await this.showRepositories(chatId, prefix ?? "Select a repo and branch first.");
       return;
     }
 
     const workspace = this.registry.getWorkspaceById(targetWorkspaceId);
     if (!workspace) {
-      await this.showRepositories(chatId, prefix ?? "找不到这个 branch。");
+      await this.showRepositories(chatId, prefix ?? "Branch not found.");
       return;
     }
 
@@ -649,7 +654,7 @@ class TelegramConductorBridge {
     if (sessions.length === 0) {
       await this.safeSendMessage(
         chatId,
-        `${prefix ? `${prefix}\n\n` : ""}当前 branch 下没有 chat。点 New Chat Here 创建一个新的 Conductor chat。`,
+        `${prefix ? `${prefix}\n\n` : ""}There are no chats on the current branch. Tap New Chat Here to create a new Conductor chat.`,
         homeKeyboard(),
       );
       return;
@@ -657,7 +662,7 @@ class TelegramConductorBridge {
 
     const text = formatSessionPickerText(sessions, {
       activeSessionId: context.activeSessionId ?? workspace.activeSessionId,
-      heading: "选择一个 chat：",
+      heading: "Select a chat:",
       prefix,
     });
     await this.safeSendMessage(chatId, text, sessionsKeyboard(sessions));
@@ -666,10 +671,10 @@ class TelegramConductorBridge {
   private async showInbox(chatId: number): Promise<void> {
     const sessions = this.registry.getInboxSessions(config.pageSize);
     if (sessions.length === 0) {
-      await this.safeSendMessage(chatId, "Inbox 为空。");
+      await this.safeSendMessage(chatId, "Inbox is empty.");
       return;
     }
-    await this.safeSendMessage(chatId, "需要你处理的 chat：", inboxKeyboard(sessions));
+    await this.safeSendMessage(chatId, "Chats that need your attention:", inboxKeyboard(sessions));
   }
 
   private async showStatus(chatId: number): Promise<void> {
@@ -698,16 +703,16 @@ class TelegramConductorBridge {
   private async showQueue(chatId: number): Promise<void> {
     const session = this.resolveSelectedSession(chatId);
     if (!session) {
-      await this.safeSendMessage(chatId, "先选一个 chat。");
+      await this.safeSendMessage(chatId, "Select a chat first.");
       return;
     }
     const items = this.stateStore.listQueueForSession(session.id, 10);
     if (items.length === 0) {
-      await this.safeSendMessage(chatId, "当前 chat 没有队列。");
+      await this.safeSendMessage(chatId, "The current chat has no queue.");
       return;
     }
 
-    const lines = ["当前队列："];
+    const lines = ["Current queue:"];
     for (const item of items.reverse()) {
       lines.push(`${item.status} · ${item.text.slice(0, 80)}`);
     }
@@ -717,13 +722,13 @@ class TelegramConductorBridge {
   private async showContext(chatId: number, rawCommand: string): Promise<void> {
     const session = this.resolveSelectedSession(chatId);
     if (!session) {
-      await this.safeSendMessage(chatId, "先选一个 chat。");
+      await this.safeSendMessage(chatId, "Select a chat first.");
       return;
     }
 
     const limit = this.parseContextLimit(rawCommand);
     if (limit === null) {
-      await this.safeSendMessage(chatId, "用法：/context 或 /context 12");
+      await this.safeSendMessage(chatId, "Usage: /context or /context 12");
       return;
     }
 
@@ -736,7 +741,7 @@ class TelegramConductorBridge {
       .reverse();
 
     if (entries.length === 0) {
-      await this.safeSendMessage(chatId, "当前 chat 暂无可显示的 context。");
+      await this.safeSendMessage(chatId, "There is no visible context for the current chat yet.");
       return;
     }
 
@@ -771,17 +776,17 @@ class TelegramConductorBridge {
     fromQueue: boolean,
   ): Promise<boolean> {
     if (session.agentType && session.agentType !== "codex") {
-      await this.safeSendMessage(chatId, "当前只支持 Codex session。");
+      await this.safeSendMessage(chatId, "Only Codex sessions are supported right now.");
       return false;
     }
     if (!session.claudeSessionId) {
-      await this.safeSendMessage(chatId, "当前 chat 没有底层 thread id，无法继续。");
+      await this.safeSendMessage(chatId, "This chat is missing its underlying thread ID and cannot continue.");
       return false;
     }
 
     if (!fromQueue && this.shouldQueueSession(session)) {
       this.stateStore.enqueuePrompt(session.id, session.claudeSessionId, "normal", text);
-      await this.safeSendMessage(chatId, "当前 chat 正在忙，已加入队列。");
+      await this.safeSendMessage(chatId, "The current chat is busy. Your message was added to the queue.");
       return true;
     }
 
@@ -816,12 +821,12 @@ class TelegramConductorBridge {
         }
         await this.showChats(
           chatId,
-          "当前 chat 的底层 thread 已失效，无法继续。请切换到别的 chat，或点 New Chat Here 新建一个。",
+          "The underlying thread for this chat is no longer valid. Switch to another chat or tap New Chat Here to create a new one.",
         );
         return false;
       }
 
-      await this.safeSendMessage(chatId, "发送失败了，请稍后重试。");
+      await this.safeSendMessage(chatId, "Send failed. Please try again later.");
       return false;
     }
 
@@ -846,7 +851,7 @@ class TelegramConductorBridge {
     });
 
     if (!fromQueue) {
-      await this.safeSendMessage(chatId, "已发送。");
+      await this.safeSendMessage(chatId, "Sent.");
     }
     return true;
   }
@@ -855,7 +860,7 @@ class TelegramConductorBridge {
     const context = this.stateStore.getChatContext(chatId);
     const workspaceId = context.composeWorkspaceId ?? context.activeWorkspaceId;
     if (!workspaceId) {
-      await this.showRepositories(chatId, "先选一个 repo 和 branch。");
+      await this.showRepositories(chatId, "Select a repo and branch first.");
       return;
     }
 
@@ -881,14 +886,14 @@ class TelegramConductorBridge {
       this.stateStore.clearComposeMode(chatId);
       this.sessionIdByThreadId.set(threadId, session.id);
 
-      await this.safeSendMessage(chatId, `已创建新 chat：${title}`);
+      await this.safeSendMessage(chatId, `Created chat: ${title}`);
       await this.submitPrompt(chatId, session, text, false);
     } catch (error) {
       if (threadId) {
         await this.codex.archiveThread(threadId).catch(() => undefined);
       }
       logger.error("failed to create new session", error);
-      await this.safeSendMessage(chatId, "创建新 chat 失败。");
+      await this.safeSendMessage(chatId, "Failed to create a new chat.");
     }
   }
 
@@ -896,7 +901,7 @@ class TelegramConductorBridge {
     const context = this.stateStore.getChatContext(chatId);
     if (!context.composeTargetSessionId || !context.composeTargetThreadId || !context.composeTargetTurnId) {
       this.stateStore.clearComposeMode(chatId);
-      await this.safeSendMessage(chatId, "当前没有活跃回合可修改。");
+      await this.safeSendMessage(chatId, "There is no active turn to revise.");
       return;
     }
 
@@ -918,7 +923,7 @@ class TelegramConductorBridge {
     const session = this.resolveSelectedSession(chatId);
     const runtime = session ? this.runtimes.get(session.id) : null;
     if (!session || !runtime) {
-      await this.safeSendMessage(chatId, "当前没有需要修改的 plan。");
+      await this.safeSendMessage(chatId, "There is no plan to revise right now.");
       return;
     }
 
@@ -927,37 +932,38 @@ class TelegramConductorBridge {
       composeTargetThreadId: runtime.threadId,
       composeTargetTurnId: runtime.turnId,
     });
-    await this.safeSendMessage(chatId, "发下一条文本作为计划修改意见。");
+    await this.safeSendMessage(chatId, "Send your next message as plan feedback.");
   }
 
   private async approvePlan(chatId: number): Promise<void> {
     const session = this.resolveSelectedSession(chatId);
     if (!session) {
-      await this.safeSendMessage(chatId, "先选一个 chat。");
+      await this.safeSendMessage(chatId, "Select a chat first.");
       return;
     }
 
     const pendingRequest = this.pendingInputRequests.get(session.id);
     if (pendingRequest) {
-      const approvalText = pendingRequest.questions[0]?.options?.[0]?.label ?? "计划可以，继续实现。";
+      const approvalText =
+        pendingRequest.questions[0]?.options?.[0]?.label ?? "The plan looks good. Please continue to implementation.";
       await this.answerInputRequest(chatId, session, pendingRequest, approvalText);
       return;
     }
 
     const runtime = this.runtimes.get(session.id);
     if (!runtime) {
-      await this.safeSendMessage(chatId, "当前没有活跃 plan。");
+      await this.safeSendMessage(chatId, "There is no active plan right now.");
       return;
     }
 
     await this.codex.steerTurn({
       threadId: runtime.threadId,
       expectedTurnId: runtime.turnId,
-      input: "计划可以，继续实现。",
+      input: "The plan looks good. Please continue to implementation.",
     });
     runtime.status = "active";
     this.mirror.updateSessionStatus(session.id, "working");
-    await this.safeSendMessage(chatId, "已发送批准。");
+    await this.safeSendMessage(chatId, "Approval sent.");
   }
 
   private async prepareReply(chatId: number): Promise<void> {
@@ -965,7 +971,7 @@ class TelegramConductorBridge {
     const runtime = session ? this.runtimes.get(session.id) : null;
     const pendingRequest = session ? this.pendingInputRequests.get(session.id) : null;
     if (!session || !runtime || !pendingRequest) {
-      await this.safeSendMessage(chatId, "当前没有待回答的问题。");
+      await this.safeSendMessage(chatId, "There is no pending question right now.");
       return;
     }
 
@@ -974,7 +980,7 @@ class TelegramConductorBridge {
       composeTargetThreadId: runtime.threadId,
       composeTargetTurnId: runtime.turnId,
     });
-    await this.safeSendMessage(chatId, "发下一条文本作为回答。");
+    await this.safeSendMessage(chatId, "Send your next message as the reply.");
   }
 
   private buildInputAnswers(questions: PendingInputQuestion[], text: string): Record<string, { answers: string[] }> {
@@ -1041,7 +1047,7 @@ class TelegramConductorBridge {
       runtime.status = "active";
     }
     this.mirror.updateSessionStatus(session.id, "working");
-    await this.safeSendMessage(chatId, "已发送回答。");
+    await this.safeSendMessage(chatId, "Reply sent.");
   }
 
   private async handleCodexServerRequest(request: CodexServerRequest): Promise<void> {
@@ -1115,11 +1121,11 @@ class TelegramConductorBridge {
     runtime.status = "waiting_user_input";
     this.mirror.updateSessionStatus(sessionId, "needs_user_input");
 
-    const lines = ["需要你回复："];
+    const lines = ["Reply required:"];
     for (const question of questions) {
       lines.push(`- ${question.header}: ${question.question}`);
       if (question.options?.length) {
-        lines.push(`  选项: ${question.options.map((option) => option.label).join(" / ")}`);
+        lines.push(`  Options: ${question.options.map((option) => option.label).join(" / ")}`);
       }
     }
     await this.pushRuntimeUpdate(runtime, lines.join("\n"), replyKeyboard());
@@ -1316,7 +1322,7 @@ class TelegramConductorBridge {
     if (turnStatus === "failed") {
       runtime.status = "failed";
       if (!runtime.assistantText) {
-        runtime.assistantText = extractHumanText(error) || "执行失败。";
+        runtime.assistantText = extractHumanText(error) || "Execution failed.";
       }
       this.mirror.updateSessionStatus(sessionId, "error");
       await this.pushRuntimeUpdate(runtime);
@@ -1351,7 +1357,7 @@ class TelegramConductorBridge {
     const runtime = this.runtimes.get(sessionId);
     if (runtime) {
       runtime.status = "failed";
-      runtime.assistantText = "底层 thread 进入 systemError。";
+      runtime.assistantText = "The underlying thread entered systemError.";
       await this.pushRuntimeUpdate(runtime);
     }
   }
@@ -1423,10 +1429,10 @@ class TelegramConductorBridge {
       runtime.planText ??
       runtime.assistantText ??
       (runtime.status === "waiting_user_input"
-        ? "等待你的回复。"
+        ? "Waiting for your reply."
         : runtime.status === "waiting_plan"
-          ? "等待你确认计划。"
-          : "处理中…");
+          ? "Waiting for your plan approval."
+          : "Working...");
 
     const text = truncate(
       `${formatStatusLine(
