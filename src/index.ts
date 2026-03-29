@@ -62,6 +62,8 @@ interface PendingInputRequest {
 
 interface ContextViewerState {
   entryCount: number;
+  keyboardFingerprint: string | null;
+  lastText: string | null;
   limit: number;
   location: TelegramConversationTarget;
   messageId: number | null;
@@ -1009,6 +1011,8 @@ export class TelegramConductorBridge {
     const existing = this.contextViewers.get(key);
     const viewer: ContextViewerState = {
       entryCount: entries.length,
+      keyboardFingerprint: existing?.keyboardFingerprint ?? null,
+      lastText: existing?.lastText ?? null,
       limit,
       location,
       messageId: existing?.messageId ?? null,
@@ -2341,10 +2345,17 @@ export class TelegramConductorBridge {
   private async renderContextViewer(viewer: ContextViewerState): Promise<void> {
     const text = this.renderContextViewerText(viewer);
     const keyboard = this.contextViewerKeyboard(viewer);
+    const keyboardFingerprint = JSON.stringify(keyboard);
+
+    if (viewer.messageId && viewer.lastText === text && viewer.keyboardFingerprint === keyboardFingerprint) {
+      return;
+    }
 
     if (viewer.messageId) {
       try {
         await this.telegram.editMessageText(viewer.location.chatId, viewer.messageId, text, keyboard);
+        viewer.lastText = text;
+        viewer.keyboardFingerprint = keyboardFingerprint;
         return;
       } catch (error) {
         logger.warn("failed to edit context viewer, sending new message", error);
@@ -2357,6 +2368,8 @@ export class TelegramConductorBridge {
       ...(viewer.location.messageThreadId !== null ? { message_thread_id: viewer.location.messageThreadId } : {}),
     });
     viewer.messageId = messageId;
+    viewer.lastText = text;
+    viewer.keyboardFingerprint = keyboardFingerprint;
   }
 
   private renderContextViewerText(viewer: ContextViewerState): string {
