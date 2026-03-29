@@ -182,7 +182,8 @@ function buildHelpText(): string {
     "/help  Show help",
     "",
     "You can also tap Help on the home screen.",
-    "Plain text continues the currently selected chat in this Telegram chat or topic.",
+    "Plain text continues the currently selected chat.",
+    "In forum-enabled supergroups, each chat streams in its dedicated topic.",
   ].join("\n");
 }
 
@@ -400,6 +401,16 @@ class TelegramConductorBridge {
         }
         return;
       }
+      if (
+        await this.moveSessionToDedicatedTopicIfNeeded(
+          location,
+          session,
+          `Continuing: ${formatSessionTitle(session.title)}`,
+        )
+      ) {
+        return;
+      }
+      this.activateSessionLocation(location, session);
       await this.showHome(location, `Continuing: ${formatSessionTitle(session.title)}`);
       return;
     }
@@ -577,6 +588,13 @@ class TelegramConductorBridge {
       return;
     }
 
+    if (location.messageThreadId === null) {
+      const topicLocation = await this.ensureSessionTopicLocation(location, session);
+      if (topicLocation) {
+        this.activateSessionLocation(location, session, { follow: false });
+      }
+    }
+
     await this.submitPrompt(location, session, text, false);
   }
 
@@ -595,8 +613,24 @@ class TelegramConductorBridge {
       return null;
     }
 
-    this.stateStore.setConversationActiveSession(location, workspace.activeSessionId);
-    return this.registry.getSessionById(workspace.activeSessionId);
+    const session = this.registry.getSessionById(workspace.activeSessionId);
+    if (!session) {
+      return null;
+    }
+
+    const dedicatedTopic = this.getKnownSessionTopicLocation(location, session);
+    if (
+      location.messageThreadId !== null &&
+      dedicatedTopic &&
+      conversationKey(dedicatedTopic) !== conversationKey(location)
+    ) {
+      return null;
+    }
+
+    this.activateSessionLocation(location, session, {
+      follow: !dedicatedTopic || conversationKey(dedicatedTopic) === conversationKey(location),
+    });
+    return session;
   }
 
   private async selectRepository(location: TelegramConversationTarget, repositoryId: string): Promise<void> {
@@ -618,10 +652,14 @@ class TelegramConductorBridge {
 
     this.stateStore.setConversationActiveWorkspace(location, workspace.id);
     if (workspace.activeSessionId) {
-      this.stateStore.setConversationActiveSession(location, workspace.activeSessionId);
       const session = this.registry.getSessionById(workspace.activeSessionId);
-      if (session?.claudeSessionId) {
-        this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
+      const dedicatedTopic = session ? this.getKnownSessionTopicLocation(location, session) : null;
+      if (session) {
+        this.activateSessionLocation(location, session, {
+          follow: !dedicatedTopic || conversationKey(dedicatedTopic) === conversationKey(location),
+        });
+      } else {
+        this.stateStore.updateConversationContext(location, { activeSessionId: null, followSessionId: null });
       }
     } else {
       this.stateStore.updateConversationContext(location, { activeSessionId: null, followSessionId: null });
@@ -645,15 +683,95 @@ class TelegramConductorBridge {
       return;
     }
 
-    this.stateStore.setConversationActiveWorkspace(location, session.workspaceId);
-    this.stateStore.setConversationActiveSession(location, session.id);
-    this.stateStore.clearConversationComposeMode(location);
+    if (
+      await this.moveSessionToDedicatedTopicIfNeeded(
+        location,
+        session,
+        `Switched to chat: ${formatSessionTitle(session.title)}`,
+      )
+    ) {
+      return;
+    }
+
+    this.activateSessionLocation(location, session);
+    await this.showHome(location, `Switched to chat: ${formatSessionTitle(session.title)}`);
+  }
+
+  private activateSessionLocation(
+    location: TelegramConversationTarget,
+    session: ConductorSessionRef,
+    options?: { follow?: boolean },
+  ): void {
+    this.stateStore.updateConversationContext(location, {
+      activeWorkspaceId: session.workspaceId,
+      activeSessionId: session.id,
+      composeMode: "none",
+      composeWorkspaceId: null,
+      followSessionId: options?.follow === false ? null : session.id,
+      composeTargetSessionId: null,
+      composeTargetThreadId: null,
+      composeTargetTurnId: null,
+    });
     this.registry.updateWorkspaceActiveSession(session.workspaceId, session.id);
     if (session.claudeSessionId) {
       this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
     }
+  }
 
-    await this.showHome(location, `Switched to chat: ${formatSessionTitle(session.title)}`);
+  private getKnownSessionTopicLocation(
+    location: TelegramConversationTarget,
+    session: ConductorSessionRef,
+  ): TelegramConversationTarget | null {
+    const existingTopic = this.stateStore.getSessionTopic(session.id, location.chatId);
+    if (existingTopic) {
+      return existingTopic;
+    }
+
+    const legacyTopic = this.stateStore.findFollowingTopic(session.id, location.chatId);
+    if (!legacyTopic) {
+      return null;
+    }
+
+    return this.stateStore.bindSessionTopic(session.id, legacyTopic);
+  }
+
+  private async ensureSessionTopicLocation(
+    location: TelegramConversationTarget,
+    session: ConductorSessionRef,
+  ): Promise<TelegramConversationTarget | null> {
+    const knownTopic = this.getKnownSessionTopicLocation(location, session);
+    if (knownTopic) {
+      this.activateSessionLocation(knownTopic, session);
+      return knownTopic;
+    }
+
+    const topicLocation = await this.createSessionTopic(location, formatSessionTitle(session.title));
+    if (!topicLocation) {
+      return null;
+    }
+
+    this.stateStore.bindSessionTopic(session.id, topicLocation);
+    this.activateSessionLocation(topicLocation, session);
+    return topicLocation;
+  }
+
+  private async moveSessionToDedicatedTopicIfNeeded(
+    location: TelegramConversationTarget,
+    session: ConductorSessionRef,
+    prefix: string,
+  ): Promise<boolean> {
+    const topicLocation = await this.ensureSessionTopicLocation(location, session);
+    if (!topicLocation || conversationKey(topicLocation) === conversationKey(location)) {
+      return false;
+    }
+
+    if (location.messageThreadId === null) {
+      this.activateSessionLocation(location, session, { follow: false });
+    }
+
+    await this.safeSendMessage(location, `${prefix}\nContinue in the dedicated Telegram topic.`);
+    await this.showHome(topicLocation, prefix);
+    return true;
   }
 
   private async showHome(location: TelegramConversationTarget, prefix?: string): Promise<void> {
@@ -661,6 +779,7 @@ class TelegramConductorBridge {
     const workspace = context.activeWorkspaceId ? this.registry.getWorkspaceById(context.activeWorkspaceId) : null;
     const session = this.resolveSelectedSession(location);
     const runtime = session ? (this.runtimes.get(session.id) ?? null) : null;
+    const dedicatedTopic = session ? this.getKnownSessionTopicLocation(location, session) : null;
 
     const lines: string[] = [];
     if (prefix) {
@@ -673,6 +792,9 @@ class TelegramConductorBridge {
     lines.push(`Current Chat: ${selectedChatLabel(session)}`);
     lines.push(`Status: ${this.sessionStatusLabel(session, runtime)}`);
     lines.push(`Mode: ${context.composeMode}`);
+    if (dedicatedTopic && conversationKey(dedicatedTopic) !== conversationKey(location)) {
+      lines.push(`Dedicated Topic: ${dedicatedTopic.messageThreadId}`);
+    }
     if (location.messageThreadId !== null) {
       lines.push(`Topic: ${location.messageThreadId}`);
     }
@@ -978,17 +1100,19 @@ class TelegramConductorBridge {
       });
 
       this.sessionIdByThreadId.set(threadId, session.id);
-      const topicLocation = await this.createSessionTopic(location, title);
+      const topicLocation = await this.ensureSessionTopicLocation(location, session);
       const sessionLocation = topicLocation ?? location;
 
-      this.stateStore.setConversationActiveWorkspace(location, workspaceId);
-      this.stateStore.setConversationActiveSession(location, session.id);
-      this.stateStore.clearConversationComposeMode(location);
-      if (topicLocation) {
-        this.stateStore.updateConversationContext(location, { followSessionId: null });
-        this.stateStore.setConversationActiveWorkspace(topicLocation, workspaceId);
-        this.stateStore.setConversationActiveSession(topicLocation, session.id);
-        this.stateStore.clearConversationComposeMode(topicLocation);
+      if (!topicLocation || conversationKey(topicLocation) === conversationKey(location)) {
+        this.activateSessionLocation(location, session);
+      } else if (location.messageThreadId === null) {
+        this.activateSessionLocation(location, session, { follow: false });
+      } else {
+        this.stateStore.clearConversationComposeMode(location);
+      }
+
+      if (topicLocation && conversationKey(topicLocation) !== conversationKey(location)) {
+        this.activateSessionLocation(topicLocation, session);
       }
 
       if (topicLocation) {
