@@ -66,6 +66,7 @@ export class ConductorRegistryAdapter {
             w.directory_name as directoryName,
             w.branch as branch,
             w.pr_title as prTitle,
+            s.title as activeSessionTitle,
             w.repository_id as repositoryId,
             w.active_session_id as activeSessionId,
             w.updated_at as updatedAt,
@@ -73,6 +74,7 @@ export class ConductorRegistryAdapter {
             r.name as repositoryName
           FROM workspaces w
           JOIN repos r ON r.id = w.repository_id
+          LEFT JOIN sessions s ON s.id = w.active_session_id
           WHERE IFNULL(r.hidden, 0) = 0
           ORDER BY w.updated_at DESC
           LIMIT ?
@@ -110,6 +112,7 @@ export class ConductorRegistryAdapter {
             w.directory_name as directoryName,
             w.branch as branch,
             w.pr_title as prTitle,
+            s.title as activeSessionTitle,
             w.repository_id as repositoryId,
             w.active_session_id as activeSessionId,
             w.updated_at as updatedAt,
@@ -117,6 +120,7 @@ export class ConductorRegistryAdapter {
             r.name as repositoryName
           FROM workspaces w
           JOIN repos r ON r.id = w.repository_id
+          LEFT JOIN sessions s ON s.id = w.active_session_id
           WHERE w.id = ?
           LIMIT 1
         `,
@@ -134,6 +138,7 @@ export class ConductorRegistryAdapter {
             w.directory_name as directoryName,
             w.branch as branch,
             w.pr_title as prTitle,
+            active.title as activeSessionTitle,
             w.repository_id as repositoryId,
             w.active_session_id as activeSessionId,
             active.status as activeSessionStatus,
@@ -174,6 +179,7 @@ export class ConductorRegistryAdapter {
       directoryName: row.directoryName,
       branch: row.branch,
       ...(row.prTitle !== undefined ? { prTitle: row.prTitle } : {}),
+      ...(row.activeSessionTitle !== undefined ? { activeSessionTitle: row.activeSessionTitle } : {}),
       repositoryId: row.repositoryId,
       activeSessionId: row.activeSessionId,
       updatedAt: row.updatedAt,

@@ -87,10 +87,22 @@ describe("formatWorkspaceOptionName", () => {
     expect(
       formatWorkspaceOptionName({
         prTitle: null,
+        activeSessionTitle: null,
         branch: "feature/demo",
         directoryName: "hyderabad",
       }),
     ).toBe("hyderabad");
+  });
+
+  it("falls back to active session titles before directory names", () => {
+    expect(
+      formatWorkspaceOptionName({
+        prTitle: null,
+        activeSessionTitle: "Explain Project",
+        branch: "xudong963/bangalore",
+        directoryName: "bangalore",
+      }),
+    ).toBe("Explain Project");
   });
 });
 
@@ -121,8 +133,20 @@ describe("formatBranchPickerText", () => {
   it("renders branch previews with current marker", () => {
     const result = formatBranchPickerText(
       [
-        { id: "workspace-1", prTitle: "Build login flow", branch: "feature/demo", directoryName: "moscow" },
-        { id: "workspace-2", prTitle: null, branch: null, directoryName: "spokane" },
+        {
+          id: "workspace-1",
+          prTitle: "Build login flow",
+          activeSessionTitle: "Ignored because PR title exists",
+          branch: "feature/demo",
+          directoryName: "moscow",
+        },
+        {
+          id: "workspace-2",
+          prTitle: null,
+          activeSessionTitle: "Explain Project",
+          branch: "xudong963/bangalore",
+          directoryName: "bangalore",
+        },
       ],
       {
         activeWorkspaceId: "workspace-1",
@@ -135,7 +159,8 @@ describe("formatBranchPickerText", () => {
     expect(result).toContain("Build login flow");
     expect(result).toContain("Current");
     expect(result).toContain("Directory: moscow");
-    expect(result).toContain("2. spokane");
+    expect(result).toContain("2. xudong963/bangalore");
+    expect(result).toContain("Explain Project");
     expect(result).toContain("Tap a button below to choose.");
   });
 });
