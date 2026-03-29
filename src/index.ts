@@ -76,6 +76,20 @@ function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function extractErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
 function normalizeCommand(input: string): string {
   const command = input.trim().split(/\s+/, 1)[0] ?? input.trim();
   return command.split("@", 1)[0] ?? command;
@@ -148,16 +162,31 @@ class TelegramConductorBridge {
   private async pollLoop(): Promise<void> {
     let offset = this.stateStore.getTelegramCursor() + 1;
     while (!this.stopped) {
+      let updates: TelegramUpdate[];
       try {
-        const updates = await this.telegram.getUpdates(offset, config.pollTimeoutSeconds);
-        for (const update of updates) {
-          await this.handleUpdate(update);
-          this.stateStore.setTelegramCursor(update.update_id);
-          offset = update.update_id + 1;
-        }
+        updates = await this.telegram.getUpdates(offset, config.pollTimeoutSeconds);
       } catch (error) {
         logger.error("telegram polling failed", error);
         await sleep(2000);
+        continue;
+      }
+
+      for (const update of updates) {
+        try {
+          await this.handleUpdate(update);
+        } catch (error) {
+          logger.error("failed to handle telegram update", {
+            updateId: update.update_id,
+            error,
+          });
+          const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id ?? null;
+          if (chatId) {
+            await this.safeSendMessage(chatId, "处理这条消息时失败了，请重试一次。").catch(() => undefined);
+          }
+        } finally {
+          this.stateStore.setTelegramCursor(update.update_id);
+          offset = update.update_id + 1;
+        }
       }
     }
   }
@@ -582,17 +611,44 @@ class TelegramConductorBridge {
     }
 
     const workspacePath = this.registry.resolveWorkspacePath(session.workspaceId);
-    await this.codex.resumeThread({
-      threadId: session.claudeSessionId,
-      cwd: workspacePath,
-      model: session.model,
-    });
-    const { turnId } = await this.codex.startTurn({
-      threadId: session.claudeSessionId,
-      cwd: workspacePath,
-      model: session.model,
-      input: text,
-    });
+    let turnId: string;
+    try {
+      await this.codex.resumeThread({
+        threadId: session.claudeSessionId,
+        cwd: workspacePath,
+        model: session.model,
+      });
+      ({ turnId } = await this.codex.startTurn({
+        threadId: session.claudeSessionId,
+        cwd: workspacePath,
+        model: session.model,
+        input: text,
+      }));
+    } catch (error) {
+      const errorMessage = extractErrorMessage(error);
+      logger.error("failed to submit prompt", {
+        chatId,
+        sessionId: session.id,
+        threadId: session.claudeSessionId,
+        fromQueue,
+        error,
+      });
+
+      if (errorMessage.includes("no rollout found for thread id")) {
+        const context = this.stateStore.getChatContext(chatId);
+        if (context.activeSessionId === session.id) {
+          this.stateStore.setActiveSession(chatId, null);
+        }
+        await this.showSessions(
+          chatId,
+          "当前 session 的底层 thread 已失效，无法继续。请切换到别的 session，或点 New Chat Here 新建一个。",
+        );
+        return false;
+      }
+
+      await this.safeSendMessage(chatId, "发送失败了，请稍后重试。");
+      return false;
+    }
 
     this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
     this.runtimes.set(session.id, {
