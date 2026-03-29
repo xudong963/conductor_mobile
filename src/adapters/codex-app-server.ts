@@ -5,6 +5,8 @@ import readline from "node:readline";
 import type { CodexNotification } from "../types.js";
 import { logger } from "../utils/logger.js";
 
+type JsonRpcId = number | string;
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -12,7 +14,7 @@ interface PendingRequest {
 }
 
 interface ServerRequestEnvelope {
-  id: number | string;
+  id: JsonRpcId;
   method: string;
   params: Record<string, unknown>;
 }
@@ -42,10 +44,32 @@ interface SteerTurnOptions {
   input: string;
 }
 
+const BRIDGE_ONLY_ENV_KEYS = [
+  "BRIDGE_DB_PATH",
+  "CODEX_BIN",
+  "CONDUCTOR_DB_PATH",
+  "DEFAULT_FALLBACK_MODEL",
+  "DEFAULT_PERMISSION_MODE",
+  "PAGE_SIZE",
+  "POLL_TIMEOUT_SECONDS",
+  "QUEUE_TICK_MS",
+  "TELEGRAM_ALLOWED_CHAT_IDS",
+  "TELEGRAM_BOT_TOKEN",
+  "WORKSPACES_ROOT",
+] as const;
+
+export function buildCodexChildEnv(parentEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const childEnv = { ...parentEnv };
+  for (const key of BRIDGE_ONLY_ENV_KEYS) {
+    delete childEnv[key];
+  }
+  return childEnv;
+}
+
 export class CodexAppServerAdapter extends EventEmitter {
   private process: ChildProcessWithoutNullStreams | null = null;
   private nextId = 1;
-  private readonly pending = new Map<number | string, PendingRequest>();
+  private readonly pending = new Map<JsonRpcId, PendingRequest>();
   private readonly codexBin: string;
 
   constructor(codexBin: string) {
@@ -57,12 +81,13 @@ export class CodexAppServerAdapter extends EventEmitter {
     if (this.process) {
       return;
     }
-    this.process = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], {
+    const child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
+      env: buildCodexChildEnv(process.env),
     });
+    this.process = child;
 
-    this.process.stderr.on("data", (buf) => {
+    child.stderr.on("data", (buf) => {
       const text = buf.toString("utf8").trim();
       if (!text) {
         return;
@@ -70,27 +95,50 @@ export class CodexAppServerAdapter extends EventEmitter {
       logger.debug("codex stderr", text);
     });
 
-    this.process.on("exit", (code, signal) => {
-      logger.warn("codex app-server exited", { code, signal });
-      for (const [id, pending] of this.pending) {
-        pending.reject(new Error(`codex app-server exited while waiting for ${pending.method} (${id})`));
-      }
-      this.pending.clear();
-      this.process = null;
-    });
-
-    const rl = readline.createInterface({ input: this.process.stdout });
+    const rl = readline.createInterface({ input: child.stdout });
     rl.on("line", (line) => this.onLine(line));
 
-    await this.request("initialize", {
-      clientInfo: {
-        name: "telegram-bridge",
-        version: "0.1.0",
-      },
-      capabilities: {
-        experimentalApi: true,
-      },
+    const rejectPending = (error: Error): void => {
+      for (const [id, pending] of this.pending) {
+        pending.reject(new Error(`${error.message} while waiting for ${pending.method} (${id})`, { cause: error }));
+      }
+      this.pending.clear();
+    };
+
+    child.on("error", (error) => {
+      logger.error("failed to start codex app-server", error);
+      rl.close();
+      rejectPending(error instanceof Error ? error : new Error(String(error)));
+      if (this.process === child) {
+        this.process = null;
+      }
     });
+
+    child.on("exit", (code, signal) => {
+      logger.warn("codex app-server exited", { code, signal });
+      rl.close();
+      rejectPending(new Error("codex app-server exited", { cause: { code, signal } }));
+      if (this.process === child) {
+        this.process = null;
+      }
+    });
+
+    try {
+      await this.request("initialize", {
+        clientInfo: {
+          name: "telegram-bridge",
+          version: "0.1.0",
+        },
+        capabilities: {
+          experimentalApi: true,
+        },
+      });
+    } catch (error) {
+      if (this.process === child) {
+        child.kill("SIGTERM");
+      }
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
@@ -137,14 +185,30 @@ export class CodexAppServerAdapter extends EventEmitter {
     await this.request("thread/archive", { threadId });
   }
 
-  async respond(id: number | string, result: Record<string, unknown>): Promise<void> {
-    if (!this.process) {
+  async respond(id: JsonRpcId, result: Record<string, unknown>): Promise<void> {
+    await this.writeJsonRpcMessage({ jsonrpc: "2.0", id, result });
+  }
+
+  async respondError(
+    id: JsonRpcId,
+    error: {
+      code: number;
+      message: string;
+      data?: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    await this.writeJsonRpcMessage({ jsonrpc: "2.0", id, error });
+  }
+
+  private async writeJsonRpcMessage(message: Record<string, unknown>): Promise<void> {
+    const child = this.process;
+    if (!child) {
       throw new Error("codex app-server is not started");
     }
 
-    const payload = `${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`;
+    const payload = `${JSON.stringify(message)}\n`;
     await new Promise<void>((resolve, reject) => {
-      this.process?.stdin.write(payload, (error) => {
+      child.stdin.write(payload, (error) => {
         if (error) {
           reject(error);
           return;
@@ -192,7 +256,7 @@ export class CodexAppServerAdapter extends EventEmitter {
 
     const hasId = Object.prototype.hasOwnProperty.call(payload, "id");
     const hasMethod = typeof payload.method === "string";
-    const id = (payload.id ?? null) as number | string | null;
+    const id = (payload.id ?? null) as JsonRpcId | null;
 
     if (hasId && id !== null && this.pending.has(id)) {
       const pending = this.pending.get(id);
@@ -228,7 +292,8 @@ export class CodexAppServerAdapter extends EventEmitter {
   }
 
   private async request(method: string, params: Record<string, unknown>): Promise<unknown> {
-    if (!this.process) {
+    const child = this.process;
+    if (!child) {
       throw new Error("codex app-server is not started");
     }
 
@@ -244,7 +309,7 @@ export class CodexAppServerAdapter extends EventEmitter {
 
     return await new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve, reject, method });
-      this.process?.stdin.write(payload, (error) => {
+      child.stdin.write(payload, (error) => {
         if (error) {
           this.pending.delete(id);
           reject(error);

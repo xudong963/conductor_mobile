@@ -1,4 +1,7 @@
 node_modules
 dist
-.env
+.context/
+.env*
+!.env.example
+.envrc
 .DS_Store

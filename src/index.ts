@@ -1,4 +1,5 @@
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 import { ConductorMirrorWriter } from "./adapters/conductor-mirror.js";
 import { CodexAppServerAdapter } from "./adapters/codex-app-server.js";
@@ -102,6 +103,16 @@ interface CodexServerRequest {
   params: Record<string, unknown>;
 }
 
+type PromptSubmitResult = "submitted" | "queued" | "retryable_failure" | "permanent_failure";
+
+interface BridgeDependencies {
+  codex?: CodexAppServerAdapter;
+  mirror?: ConductorMirrorWriter;
+  registry?: ConductorRegistryAdapter;
+  stateStore?: BridgeStateStore;
+  telegram?: TelegramClient;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -161,6 +172,18 @@ function selectedChatLabel(session: Pick<ConductorSessionRef, "title"> | null | 
   return session ? formatSessionTitle(session.title) : "Not selected";
 }
 
+function queueDrainStatus(result: PromptSubmitResult): "finished" | "retry" | "failed" {
+  switch (result) {
+    case "submitted":
+      return "finished";
+    case "retryable_failure":
+      return "retry";
+    case "queued":
+    case "permanent_failure":
+      return "failed";
+  }
+}
+
 const BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "start", description: "Open the home screen" },
   { command: "home", description: "Show the current repo, branch, and chat" },
@@ -201,16 +224,12 @@ function buildHelpText(): string {
   ].join("\n");
 }
 
-class TelegramConductorBridge {
-  private readonly codex = new CodexAppServerAdapter(config.codexBin);
+export class TelegramConductorBridge {
+  private readonly codex: CodexAppServerAdapter;
   private readonly mirror: ConductorMirrorWriter;
-  private readonly registry = new ConductorRegistryAdapter(config.conductorDbPath, {
-    workspacesRoot: config.workspacesRoot,
-    defaultFallbackModel: config.defaultFallbackModel,
-    defaultPermissionMode: config.defaultPermissionMode,
-  });
-  private readonly stateStore = new BridgeStateStore(config.bridgeDbPath);
-  private readonly telegram = new TelegramClient(config.telegramToken);
+  private readonly registry: ConductorRegistryAdapter;
+  private readonly stateStore: BridgeStateStore;
+  private readonly telegram: TelegramClient;
   private readonly runtimes = new Map<string, RuntimeState>();
   private readonly pendingInputRequests = new Map<string, PendingInputRequest>();
   private readonly sessionIdByThreadId = new Map<string, string>();
@@ -222,8 +241,18 @@ class TelegramConductorBridge {
   private queueTimer: NodeJS.Timeout | null = null;
   private stopped = false;
 
-  constructor() {
-    this.mirror = new ConductorMirrorWriter(this.registry, this.stateStore);
+  constructor(deps: BridgeDependencies = {}) {
+    this.codex = deps.codex ?? new CodexAppServerAdapter(config.codexBin);
+    this.registry =
+      deps.registry ??
+      new ConductorRegistryAdapter(config.conductorDbPath, {
+        workspacesRoot: config.workspacesRoot,
+        defaultFallbackModel: config.defaultFallbackModel,
+        defaultPermissionMode: config.defaultPermissionMode,
+      });
+    this.stateStore = deps.stateStore ?? new BridgeStateStore(config.bridgeDbPath);
+    this.telegram = deps.telegram ?? new TelegramClient(config.telegramToken);
+    this.mirror = deps.mirror ?? new ConductorMirrorWriter(this.registry, this.stateStore);
   }
 
   async start(): Promise<void> {
@@ -288,25 +317,34 @@ class TelegramConductorBridge {
       }
 
       for (const update of updates) {
-        try {
-          await this.handleUpdate(update);
-        } catch (error) {
-          logger.error("failed to handle telegram update", {
-            updateId: update.update_id,
-            error,
-          });
-          const failedMessage = update.message ?? update.callback_query?.message;
-          if (failedMessage) {
-            await this.safeSendMessage(
-              toConversationTarget(failedMessage),
-              "Failed to process that message. Please try again.",
-            ).catch(() => undefined);
-          }
-        } finally {
-          this.stateStore.setTelegramCursor(update.update_id);
-          offset = update.update_id + 1;
+        const processed = await this.processPolledUpdate(update);
+        if (!processed) {
+          await sleep(2000);
+          break;
         }
+        offset = update.update_id + 1;
       }
+    }
+  }
+
+  private async processPolledUpdate(update: TelegramUpdate): Promise<boolean> {
+    try {
+      await this.handleUpdate(update);
+      this.stateStore.setTelegramCursor(update.update_id);
+      return true;
+    } catch (error) {
+      logger.error("failed to handle telegram update", {
+        updateId: update.update_id,
+        error,
+      });
+      const failedMessage = update.message ?? update.callback_query?.message;
+      if (failedMessage) {
+        await this.safeSendMessage(
+          toConversationTarget(failedMessage),
+          "Failed to process that message. Please try again.",
+        ).catch(() => undefined);
+      }
+      return false;
     }
   }
 
@@ -1000,14 +1038,14 @@ class TelegramConductorBridge {
       allowMissingRollout?: boolean;
       suppressSentConfirmation?: boolean;
     },
-  ): Promise<boolean> {
+  ): Promise<PromptSubmitResult> {
     if (session.agentType && session.agentType !== "codex") {
       await this.safeSendMessage(location, "Only Codex sessions are supported right now.");
-      return false;
+      return "permanent_failure";
     }
     if (!session.claudeSessionId) {
       await this.safeSendMessage(location, "This chat is missing its underlying thread ID and cannot continue.");
-      return false;
+      return "permanent_failure";
     }
 
     if (!fromQueue && this.shouldQueueSession(session)) {
@@ -1016,7 +1054,7 @@ class TelegramConductorBridge {
         location,
         "The current chat is busy. Your message was added to the queue. Use /status or /queue to check progress.",
       );
-      return true;
+      return "queued";
     }
 
     const workspacePath = this.registry.resolveWorkspacePath(session.workspaceId);
@@ -1054,11 +1092,13 @@ class TelegramConductorBridge {
           location,
           "The underlying thread for this chat is no longer valid. Switch to another chat or tap New Chat Here to create a new one.",
         );
-        return false;
+        return "permanent_failure";
       }
 
-      await this.safeSendMessage(location, "Send failed. Please try again later.");
-      return false;
+      if (!fromQueue) {
+        await this.safeSendMessage(location, "Send failed. Please try again later.");
+      }
+      return "retryable_failure";
     }
 
     this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
@@ -1095,7 +1135,7 @@ class TelegramConductorBridge {
     if (!fromQueue && !options?.suppressSentConfirmation && location.messageThreadId === null) {
       await this.safeSendMessage(location, "Sent.");
     }
-    return true;
+    return "submitted";
   }
 
   private async createNewSession(location: TelegramConversationTarget, text: string): Promise<void> {
@@ -1319,6 +1359,10 @@ class TelegramConductorBridge {
   private async handleCodexServerRequest(request: CodexServerRequest): Promise<void> {
     if (request.method !== "item/tool/requestUserInput") {
       logger.info("ignoring unsupported server request", { method: request.method });
+      await this.codex.respondError(request.id, {
+        code: -32601,
+        message: `Unsupported server request: ${request.method}`,
+      });
       return;
     }
 
@@ -1327,11 +1371,19 @@ class TelegramConductorBridge {
     const itemId = asString(request.params.itemId);
     const rawQuestions = Array.isArray(request.params.questions) ? request.params.questions : [];
     if (!threadId || !turnId || !itemId) {
+      await this.codex.respondError(request.id, {
+        code: -32602,
+        message: "requestUserInput is missing threadId, turnId, or itemId",
+      });
       return;
     }
 
     const sessionId = this.resolveSessionIdByThreadId(threadId);
     if (!sessionId) {
+      await this.codex.respondError(request.id, {
+        code: -32001,
+        message: `Unable to resolve a session for thread ${threadId}`,
+      });
       return;
     }
 
@@ -1373,6 +1425,26 @@ class TelegramConductorBridge {
         };
       })
       .filter((question): question is PendingInputQuestion => question !== null);
+
+    if (questions.length === 0) {
+      const fallbackQuestion = asString(request.params.question);
+      if (fallbackQuestion) {
+        questions.push({
+          id: itemId,
+          header: "Reply",
+          question: fallbackQuestion,
+          options: null,
+        });
+      }
+    }
+
+    if (questions.length === 0) {
+      await this.codex.respondError(request.id, {
+        code: -32602,
+        message: "requestUserInput did not include any usable questions",
+      });
+      return;
+    }
 
     this.pendingInputRequests.set(sessionId, {
       requestId: request.id,
@@ -1766,8 +1838,15 @@ class TelegramConductorBridge {
 
     this.stateStore.markPromptStarted(next.id);
     try {
-      await this.submitPrompt(location, session, next.text, true);
-      this.stateStore.markPromptFinished(next.id, "finished");
+      const result = await this.submitPrompt(location, session, next.text, true);
+      const status = queueDrainStatus(result);
+      if (status === "finished") {
+        this.stateStore.markPromptFinished(next.id, "finished");
+      } else if (status === "retry") {
+        this.stateStore.retryPrompt(next.id);
+      } else {
+        this.stateStore.markPromptFinished(next.id, "failed");
+      }
     } catch (error) {
       logger.error("queued prompt failed", error);
       this.stateStore.markPromptFinished(next.id, "failed");
@@ -2253,8 +2332,14 @@ class TelegramConductorBridge {
   }
 }
 
-const bridge = new TelegramConductorBridge();
-void bridge.start().catch((error) => {
-  logger.error("bridge crashed", error);
-  process.exitCode = 1;
-});
+export async function runBridge(): Promise<void> {
+  const bridge = new TelegramConductorBridge();
+  await bridge.start();
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void runBridge().catch((error) => {
+    logger.error("bridge crashed", error);
+    process.exitCode = 1;
+  });
+}
