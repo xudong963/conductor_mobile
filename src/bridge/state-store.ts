@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import Database from "better-sqlite3";
 import crypto from "node:crypto";
 
@@ -7,6 +9,7 @@ export class BridgeStateStore {
   private readonly db: any;
 
   constructor(dbPath: string) {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("busy_timeout = 5000");
