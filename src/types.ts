@@ -58,6 +58,23 @@ export interface ChatContext {
   updatedAt: string;
 }
 
+export interface TelegramConversationTarget {
+  chatId: number;
+  messageThreadId: number | null;
+}
+
+export interface TelegramConversationContext extends TelegramConversationTarget {
+  activeWorkspaceId: string | null;
+  activeSessionId: string | null;
+  composeMode: ComposeMode;
+  composeWorkspaceId: string | null;
+  followSessionId: string | null;
+  composeTargetSessionId: string | null;
+  composeTargetThreadId: string | null;
+  composeTargetTurnId: string | null;
+  updatedAt: string;
+}
+
 export interface QueueItem {
   id: number;
   conductorSessionId: string;
@@ -106,6 +123,8 @@ export interface TelegramUser {
 export interface TelegramChat {
   id: number;
   type: string;
+  is_forum?: boolean;
+  has_topics_enabled?: boolean;
 }
 
 export interface TelegramMessage {
@@ -114,6 +133,8 @@ export interface TelegramMessage {
   chat: TelegramChat;
   date: number;
   text?: string;
+  is_topic_message?: boolean;
+  message_thread_id?: number;
 }
 
 export interface TelegramCallbackQuery {
@@ -135,11 +156,17 @@ export interface TelegramSendMessageOptions {
     inline_keyboard: TelegramInlineKeyboard;
   };
   disable_web_page_preview?: boolean;
+  message_thread_id?: number;
 }
 
 export interface TelegramBotCommand {
   command: string;
   description: string;
+}
+
+export interface TelegramForumTopic {
+  message_thread_id: number;
+  name: string;
 }
 
 export interface CodexNotification {

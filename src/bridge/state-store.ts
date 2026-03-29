@@ -3,7 +3,14 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import crypto from "node:crypto";
 
-import type { ChatContext, ComposeMode, QueueItem, QueueKind } from "../types.js";
+import type {
+  ChatContext,
+  ComposeMode,
+  QueueItem,
+  QueueKind,
+  TelegramConversationContext,
+  TelegramConversationTarget,
+} from "../types.js";
 
 export class BridgeStateStore {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -65,6 +72,55 @@ export class BridgeStateStore {
         singleton_key TEXT PRIMARY KEY,
         last_update_id INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS conversation_context (
+        location_key TEXT PRIMARY KEY,
+        chat_id INTEGER NOT NULL,
+        message_thread_id INTEGER NOT NULL DEFAULT 0,
+        active_workspace_id TEXT,
+        active_session_id TEXT,
+        compose_mode TEXT NOT NULL DEFAULT 'none',
+        compose_workspace_id TEXT,
+        follow_session_id TEXT,
+        compose_target_session_id TEXT,
+        compose_target_thread_id TEXT,
+        compose_target_turn_id TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS conversation_context_follow_session_idx
+      ON conversation_context (follow_session_id);
+    `);
+
+    this.db.exec(`
+      INSERT OR IGNORE INTO conversation_context (
+        location_key,
+        chat_id,
+        message_thread_id,
+        active_workspace_id,
+        active_session_id,
+        compose_mode,
+        compose_workspace_id,
+        follow_session_id,
+        compose_target_session_id,
+        compose_target_thread_id,
+        compose_target_turn_id,
+        updated_at
+      )
+      SELECT
+        CAST(chat_id AS TEXT) || ':0',
+        chat_id,
+        0,
+        active_workspace_id,
+        active_session_id,
+        compose_mode,
+        compose_workspace_id,
+        follow_session_id,
+        compose_target_session_id,
+        compose_target_thread_id,
+        compose_target_turn_id,
+        updated_at
+      FROM chat_context
     `);
   }
 
@@ -192,6 +248,173 @@ export class BridgeStateStore {
       composeTargetThreadId: null,
       composeTargetTurnId: null,
     });
+  }
+
+  getConversationContext(target: TelegramConversationTarget): TelegramConversationContext {
+    const messageThreadId = this.normalizeMessageThreadId(target.messageThreadId);
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            chat_id as chatId,
+            NULLIF(message_thread_id, 0) as messageThreadId,
+            active_workspace_id as activeWorkspaceId,
+            active_session_id as activeSessionId,
+            compose_mode as composeMode,
+            compose_workspace_id as composeWorkspaceId,
+            follow_session_id as followSessionId,
+            compose_target_session_id as composeTargetSessionId,
+            compose_target_thread_id as composeTargetThreadId,
+            compose_target_turn_id as composeTargetTurnId,
+            updated_at as updatedAt
+          FROM conversation_context
+          WHERE location_key = ?
+        `,
+      )
+      .get(this.conversationKey(target.chatId, messageThreadId)) as TelegramConversationContext | undefined;
+
+    if (row) {
+      return row;
+    }
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO conversation_context (
+            location_key,
+            chat_id,
+            message_thread_id,
+            compose_mode
+          )
+          VALUES (?, ?, ?, 'none')
+        `,
+      )
+      .run(this.conversationKey(target.chatId, messageThreadId), target.chatId, messageThreadId);
+
+    return this.getConversationContext(target);
+  }
+
+  updateConversationContext(
+    target: TelegramConversationTarget,
+    patch: Partial<Omit<TelegramConversationContext, "chatId" | "messageThreadId" | "updatedAt">>,
+  ): TelegramConversationContext {
+    const current = this.getConversationContext(target);
+    const messageThreadId = this.normalizeMessageThreadId(target.messageThreadId);
+    const merged: TelegramConversationContext = {
+      ...current,
+      ...patch,
+      chatId: target.chatId,
+      messageThreadId: target.messageThreadId ?? null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.db
+      .prepare(
+        `
+          INSERT INTO conversation_context (
+            location_key,
+            chat_id,
+            message_thread_id,
+            active_workspace_id,
+            active_session_id,
+            compose_mode,
+            compose_workspace_id,
+            follow_session_id,
+            compose_target_session_id,
+            compose_target_thread_id,
+            compose_target_turn_id,
+            updated_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(location_key) DO UPDATE SET
+            active_workspace_id = excluded.active_workspace_id,
+            active_session_id = excluded.active_session_id,
+            compose_mode = excluded.compose_mode,
+            compose_workspace_id = excluded.compose_workspace_id,
+            follow_session_id = excluded.follow_session_id,
+            compose_target_session_id = excluded.compose_target_session_id,
+            compose_target_thread_id = excluded.compose_target_thread_id,
+            compose_target_turn_id = excluded.compose_target_turn_id,
+            updated_at = excluded.updated_at
+        `,
+      )
+      .run(
+        this.conversationKey(target.chatId, messageThreadId),
+        merged.chatId,
+        messageThreadId,
+        merged.activeWorkspaceId,
+        merged.activeSessionId,
+        merged.composeMode,
+        merged.composeWorkspaceId,
+        merged.followSessionId,
+        merged.composeTargetSessionId,
+        merged.composeTargetThreadId,
+        merged.composeTargetTurnId,
+        merged.updatedAt,
+      );
+
+    return this.getConversationContext(target);
+  }
+
+  setConversationActiveWorkspace(
+    target: TelegramConversationTarget,
+    workspaceId: string | null,
+  ): TelegramConversationContext {
+    return this.updateConversationContext(target, { activeWorkspaceId: workspaceId });
+  }
+
+  setConversationActiveSession(
+    target: TelegramConversationTarget,
+    sessionId: string | null,
+  ): TelegramConversationContext {
+    return this.updateConversationContext(target, {
+      activeSessionId: sessionId,
+      followSessionId: sessionId,
+    });
+  }
+
+  setConversationComposeMode(
+    target: TelegramConversationTarget,
+    composeMode: ComposeMode,
+    options?: {
+      composeWorkspaceId?: string | null;
+      composeTargetSessionId?: string | null;
+      composeTargetThreadId?: string | null;
+      composeTargetTurnId?: string | null;
+    },
+  ): TelegramConversationContext {
+    return this.updateConversationContext(target, {
+      composeMode,
+      composeWorkspaceId: options?.composeWorkspaceId ?? null,
+      composeTargetSessionId: options?.composeTargetSessionId ?? null,
+      composeTargetThreadId: options?.composeTargetThreadId ?? null,
+      composeTargetTurnId: options?.composeTargetTurnId ?? null,
+    });
+  }
+
+  clearConversationComposeMode(target: TelegramConversationTarget): TelegramConversationContext {
+    return this.updateConversationContext(target, {
+      composeMode: "none",
+      composeWorkspaceId: null,
+      composeTargetSessionId: null,
+      composeTargetThreadId: null,
+      composeTargetTurnId: null,
+    });
+  }
+
+  listFollowingConversations(sessionId: string): TelegramConversationTarget[] {
+    return this.db
+      .prepare(
+        `
+          SELECT
+            chat_id as chatId,
+            NULLIF(message_thread_id, 0) as messageThreadId
+          FROM conversation_context
+          WHERE follow_session_id = ?
+          ORDER BY chat_id ASC, message_thread_id ASC
+        `,
+      )
+      .all(sessionId) as TelegramConversationTarget[];
   }
 
   listFollowingChats(sessionId: string): number[] {
@@ -373,5 +596,13 @@ export class BridgeStateStore {
         `,
       )
       .run(fingerprint, sessionId, turnId, role);
+  }
+
+  private normalizeMessageThreadId(messageThreadId: number | null | undefined): number {
+    return messageThreadId ?? 0;
+  }
+
+  private conversationKey(chatId: number, messageThreadId: number): string {
+    return `${chatId}:${messageThreadId}`;
   }
 }

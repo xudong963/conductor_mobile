@@ -2,6 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type {
   TelegramBotCommand,
+  TelegramForumTopic,
   TelegramInlineKeyboard,
   TelegramSendMessageOptions,
   TelegramUpdate,
@@ -206,10 +207,19 @@ export class TelegramClient {
     const response = await this.callApi<{ ok: boolean; result?: { message_id: number } }>("sendMessage", {
       chat_id: chatId,
       text,
+      message_thread_id: options?.message_thread_id,
       disable_web_page_preview: options?.disable_web_page_preview ?? true,
       reply_markup: options?.reply_markup,
     });
     return response.result?.message_id ?? null;
+  }
+
+  async createForumTopic(chatId: number, name: string): Promise<TelegramForumTopic> {
+    const response = await this.callApi<{ ok: boolean; result: TelegramForumTopic }>("createForumTopic", {
+      chat_id: chatId,
+      name,
+    });
+    return response.result;
   }
 
   async editMessageText(
