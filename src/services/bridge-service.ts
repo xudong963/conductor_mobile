@@ -4,7 +4,11 @@ import { CodexAppServerAdapter } from "../adapters/codex-app-server.js";
 import { ConductorMirrorWriter } from "../adapters/conductor-mirror.js";
 import { ConductorRegistryAdapter } from "../adapters/conductor-registry.js";
 import { BridgeStateStore } from "../bridge/state-store.js";
-import { TelegramClient } from "../telegram/client.js";
+import {
+  isTransientTelegramNetworkError,
+  summarizeTelegramNetworkError,
+  TelegramClient,
+} from "../telegram/client.js";
 import { homeKeyboard, inboxKeyboard, planKeyboard, replyKeyboard, sessionsKeyboard, workspacesKeyboard } from "../telegram/ui.js";
 import type {
   ChatContext,
@@ -96,7 +100,11 @@ export class TelegramBridgeService {
           this.stateStore.setTelegramCursor(update.update_id);
         }
       } catch (error) {
-        logger.error("poll loop failed", error);
+        if (isTransientTelegramNetworkError(error)) {
+          logger.warn("telegram polling interrupted; retrying", summarizeTelegramNetworkError(error));
+        } else {
+          logger.error("poll loop failed", error);
+        }
         await delay(1500);
       }
     }

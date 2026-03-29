@@ -5,7 +5,11 @@ import { CodexAppServerAdapter } from "./adapters/codex-app-server.js";
 import { ConductorRegistryAdapter } from "./adapters/conductor-registry.js";
 import { BridgeStateStore } from "./bridge/state-store.js";
 import { config } from "./config.js";
-import { TelegramClient } from "./telegram/client.js";
+import {
+  isTransientTelegramNetworkError,
+  summarizeTelegramNetworkError,
+  TelegramClient,
+} from "./telegram/client.js";
 import {
   homeKeyboard,
   inboxKeyboard,
@@ -173,7 +177,11 @@ class TelegramConductorBridge {
       try {
         updates = await this.telegram.getUpdates(offset, config.pollTimeoutSeconds);
       } catch (error) {
-        logger.error("telegram polling failed", error);
+        if (isTransientTelegramNetworkError(error)) {
+          logger.warn("telegram polling interrupted; retrying", summarizeTelegramNetworkError(error));
+        } else {
+          logger.error("telegram polling failed", error);
+        }
         await sleep(2000);
         continue;
       }
