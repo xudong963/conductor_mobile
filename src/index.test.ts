@@ -17,6 +17,7 @@ vi.mock("./config.js", () => ({
 }));
 
 import { TelegramConductorBridge } from "./index.js";
+import { TelegramApiError } from "./telegram/client.js";
 
 function createBridge() {
   const codex = {
@@ -461,6 +462,99 @@ describe("TelegramConductorBridge", () => {
 
     expect(telegram.sendMessage).toHaveBeenCalledTimes(1);
     expect(telegram.editMessageText).not.toHaveBeenCalled();
+  });
+
+  it("treats no-op session panel edits as successful refreshes", async () => {
+    const { bridge, telegram } = createBridge();
+
+    telegram.editMessageText.mockRejectedValueOnce(
+      new TelegramApiError("editMessageText", 400, "Bad Request: message is not modified"),
+    );
+
+    const location = { chatId: 99, messageThreadId: null };
+    const keyboard = [[{ text: "Refresh Status", callback_data: "panel:refresh" }]];
+    (
+      bridge as unknown as {
+        sessionPanels: Map<
+          string,
+          {
+            keyboardFingerprint: string;
+            lastText: string;
+            messageId: number | null;
+            sessionId: string | null;
+          }
+        >;
+      }
+    ).sessionPanels.set("99:0", {
+      keyboardFingerprint: "[]",
+      lastText: "Old panel text",
+      messageId: 321,
+      sessionId: "session-1",
+    });
+
+    await (
+      bridge as unknown as {
+        upsertSessionPanel: (
+          location: { chatId: number; messageThreadId: number | null },
+          sessionId: string | null,
+          text: string,
+          keyboard: Array<Array<{ text: string; callback_data: string }>>,
+        ) => Promise<void>;
+      }
+    ).upsertSessionPanel(location, "session-1", "Fresh panel text", keyboard);
+
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+    expect(
+      (
+        bridge as unknown as {
+          sessionPanels: Map<string, { lastText: string; keyboardFingerprint: string; messageId: number | null }>;
+        }
+      ).sessionPanels.get("99:0"),
+    ).toEqual({
+      keyboardFingerprint: JSON.stringify(keyboard),
+      lastText: "Fresh panel text",
+      messageId: 321,
+      sessionId: "session-1",
+    });
+  });
+
+  it("treats no-op context viewer edits as successful refreshes", async () => {
+    const { bridge, telegram } = createBridge();
+
+    telegram.editMessageText.mockRejectedValueOnce(
+      new TelegramApiError("editMessageText", 400, "Bad Request: message is not modified"),
+    );
+
+    const viewer = {
+      entryCount: 1,
+      keyboardFingerprint: null,
+      lastText: "Old viewer text",
+      limit: 12,
+      location: { chatId: 99, messageThreadId: null },
+      messageId: 123,
+      pageIndex: 0,
+      pages: ["assistant: hello"],
+      sessionId: "session-1",
+      sessionTitle: "Current Session",
+    };
+
+    await (
+      bridge as unknown as {
+        renderContextViewer: (viewer: unknown) => Promise<void>;
+      }
+    ).renderContextViewer(viewer);
+
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+    expect(viewer.messageId).toBe(123);
+    expect(viewer.lastText).toContain("assistant: hello");
+    expect(viewer.keyboardFingerprint).toBe(
+      JSON.stringify([
+        [
+          { text: "Refresh", callback_data: "context:refresh" },
+          { text: "Close", callback_data: "context:close" },
+        ],
+      ]),
+    );
   });
 
   it("arms new-workspace mode on the current repo", async () => {
