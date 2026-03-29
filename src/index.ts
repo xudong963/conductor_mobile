@@ -826,6 +826,9 @@ class TelegramConductorBridge {
     session: ConductorSessionRef,
     text: string,
     fromQueue: boolean,
+    options?: {
+      allowMissingRollout?: boolean;
+    },
   ): Promise<boolean> {
     if (session.agentType && session.agentType !== "codex") {
       await this.safeSendMessage(chatId, "Only Codex sessions are supported right now.");
@@ -849,6 +852,7 @@ class TelegramConductorBridge {
         threadId: session.claudeSessionId,
         cwd: workspacePath,
         model: session.model,
+        ...(options?.allowMissingRollout ? { allowMissingRollout: true } : {}),
       });
       ({ turnId } = await this.codex.startTurn({
         threadId: session.claudeSessionId,
@@ -938,7 +942,9 @@ class TelegramConductorBridge {
       this.sessionIdByThreadId.set(threadId, session.id);
 
       await this.safeSendMessage(chatId, `Created chat: ${title}`);
-      await this.submitPrompt(chatId, session, text, false);
+      await this.submitPrompt(chatId, session, text, false, {
+        allowMissingRollout: true,
+      });
     } catch (error) {
       if (threadId) {
         await this.codex.archiveThread(threadId).catch(() => undefined);

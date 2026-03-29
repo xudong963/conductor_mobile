@@ -565,6 +565,7 @@ describe("TelegramBridgeService user flows", () => {
       threadId: "thread-1",
       cwd: "/tmp/workspace-1",
       model: "gpt-5.4",
+      allowMissingRollout: true,
     });
     expect(fixture.codex.startedTurns[0]).toMatchObject({
       threadId: "thread-1",

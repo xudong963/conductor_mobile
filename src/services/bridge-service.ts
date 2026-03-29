@@ -390,7 +390,9 @@ export class TelegramBridgeService {
     );
 
     try {
-      await this.startPrompt(session, openingPrompt, null);
+      await this.startPrompt(session, openingPrompt, null, {
+        allowMissingRollout: true,
+      });
     } catch (error) {
       this.mirror.updateSessionStatus(session.id, "error");
       await this.telegram.sendMessage(chatId, `The first turn failed: ${extractHumanText(error)}`);
@@ -606,7 +608,14 @@ export class TelegramBridgeService {
     await this.telegram.sendMessage(chatId, "Plan approved. Moving to implementation.");
   }
 
-  private async startPrompt(session: ConductorSessionRef, text: string, queueItemId: number | null): Promise<void> {
+  private async startPrompt(
+    session: ConductorSessionRef,
+    text: string,
+    queueItemId: number | null,
+    options?: {
+      allowMissingRollout?: boolean;
+    },
+  ): Promise<void> {
     if (!session.claudeSessionId) {
       throw new Error(`Session ${session.id} missing thread id`);
     }
@@ -625,6 +634,7 @@ export class TelegramBridgeService {
       threadId: session.claudeSessionId,
       cwd: workspacePath,
       model: session.model,
+      ...(options?.allowMissingRollout ? { allowMissingRollout: true } : {}),
     });
     const { turnId } = await this.codex.startTurn({
       threadId: session.claudeSessionId,
