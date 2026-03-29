@@ -62,6 +62,7 @@ npm run dev
 - `/sessions`
 - `/status`
 - `/queue`
+- `/context [N]`
 - `/new`
 - `/help`
 

@@ -2,7 +2,14 @@ import Database from "better-sqlite3";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-import type { ConductorSessionRef, SessionDefaults, SessionSeed, SessionStatus, WorkspaceRef } from "../types.js";
+import type {
+  ConductorSessionRef,
+  SessionDefaults,
+  SessionMessageRecord,
+  SessionSeed,
+  SessionStatus,
+  WorkspaceRef,
+} from "../types.js";
 
 interface DbSessionRow {
   id: string;
@@ -350,5 +357,25 @@ export class ConductorRegistryAdapter {
         params.sentAt,
       );
     return messageId;
+  }
+
+  listSessionMessages(sessionId: string, limit: number): SessionMessageRecord[] {
+    return this.db
+      .prepare(
+        `
+          SELECT
+            role,
+            content,
+            sent_at as sentAt,
+            turn_id as turnId,
+            model
+          FROM session_messages
+          WHERE session_id = ?
+            AND cancelled_at IS NULL
+          ORDER BY COALESCE(sent_at, created_at) DESC
+          LIMIT ?
+        `,
+      )
+      .all(sessionId, limit) as SessionMessageRecord[];
   }
 }

@@ -1,4 +1,4 @@
-import type { WorkspaceRef } from "../types.js";
+import type { SessionMessageRecord, WorkspaceRef } from "../types.js";
 
 export function truncate(input: string, max = 4000): string {
   if (input.length <= max) {
@@ -48,6 +48,133 @@ export function extractHumanText(payload: unknown): string {
     );
   }
   return String(payload);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function normalizeContextText(input: string): string {
+  return input
+    .replace(/@⟦([^⟧]+)⟧\(attachment:[^)]+\)/g, "[Attachment: $1]")
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function formatContextTimestamp(sentAt: string | null): string | null {
+  if (!sentAt) {
+    return null;
+  }
+  return sentAt.length >= 16 ? sentAt.slice(0, 16).replace("T", " ") : sentAt;
+}
+
+function formatContextHeader(label: string, sentAt: string | null): string {
+  const timestamp = formatContextTimestamp(sentAt);
+  return timestamp ? `[${label} · ${timestamp}]` : `[${label}]`;
+}
+
+function summarizeToolInput(input: unknown): string {
+  const record = asRecord(input);
+  const command = asString(record?.command);
+  if (command) {
+    return truncate(command, 240);
+  }
+
+  const summary = normalizeContextText(extractHumanText(input));
+  return summary ? truncate(summary, 240) : "";
+}
+
+function formatStructuredMessageBlocks(content: unknown): string[] {
+  if (!Array.isArray(content)) {
+    const fallback = normalizeContextText(extractHumanText(content));
+    return fallback ? [truncate(fallback, 1400)] : [];
+  }
+
+  const lines: string[] = [];
+  for (const item of content) {
+    const record = asRecord(item);
+    const blockType = asString(record?.type);
+
+    if (blockType === "text") {
+      const text = normalizeContextText(asString(record?.text) ?? "");
+      if (text) {
+        lines.push(truncate(text, 1400));
+      }
+      continue;
+    }
+
+    if (blockType === "tool_use") {
+      const toolName = asString(record?.name) ?? "tool";
+      const inputSummary = summarizeToolInput(record?.input);
+      lines.push(inputSummary ? `[Tool ${toolName}] ${inputSummary}` : `[Tool ${toolName}]`);
+      continue;
+    }
+
+    if (blockType === "tool_result") {
+      const result = normalizeContextText(extractHumanText(record?.content));
+      if (!result) {
+        if (record?.is_error === true) {
+          lines.push("[Tool result error]");
+        }
+        continue;
+      }
+      lines.push(`[Tool result${record?.is_error === true ? " error" : ""}] ${truncate(result, 900)}`);
+      continue;
+    }
+
+    const fallback = normalizeContextText(extractHumanText(item));
+    if (fallback) {
+      lines.push(truncate(fallback, 900));
+    }
+  }
+
+  return lines;
+}
+
+export function formatSessionContextEntry(message: SessionMessageRecord): string | null {
+  const fallbackLabel = message.role === "user" ? "User" : "Assistant";
+  const rawText = normalizeContextText(message.content);
+  if (!rawText) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(message.content) as unknown;
+    const record = asRecord(parsed);
+    const envelopeType = asString(record?.type);
+
+    if (envelopeType === "system" || envelopeType === "result") {
+      return null;
+    }
+
+    if (envelopeType === "error") {
+      const errorText = normalizeContextText(extractHumanText(record?.content));
+      return `${formatContextHeader("Error", message.sentAt)}\n${errorText || "Unknown error"}`;
+    }
+
+    if (envelopeType === "assistant" || envelopeType === "user") {
+      const nestedMessage = asRecord(record?.message);
+      const lines = formatStructuredMessageBlocks(nestedMessage?.content);
+      if (lines.length === 0) {
+        return null;
+      }
+      const label = envelopeType === "assistant" ? "Assistant" : "User";
+      return `${formatContextHeader(label, message.sentAt)}\n${lines.join("\n\n")}`;
+    }
+  } catch {
+    // Not JSON; fall back to the raw message content below.
+  }
+
+  return `${formatContextHeader(fallbackLabel, message.sentAt)}\n${truncate(rawText, 1400)}`;
 }
 
 export function formatStatusLine(
