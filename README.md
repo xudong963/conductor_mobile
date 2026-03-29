@@ -1,47 +1,47 @@
 # Telegram Conductor Bridge
 
-在手机上的 Telegram 私聊里控制本机 Conductor，当前版本支持：
+Control the local Conductor instance from a Telegram private chat on your phone. The current version supports:
 
-- 浏览 repo
-- 浏览并切换 branch
-- 浏览并切换 chat
-- 继续已有 Codex session
-- 在当前 branch 下创建新的 Conductor chat
-- 基础队列
-- 基础流式文本回推
-- 基础 `requestUserInput` / plan 反馈
+- Browsing repos
+- Browsing and switching branches
+- Browsing and switching chats
+- Continuing existing Codex sessions
+- Creating a new Conductor chat on the current branch
+- Basic queueing
+- Basic streamed text updates
+- Basic `requestUserInput` and plan feedback flows
 
 ## Prerequisites
 
-- macOS 上已经安装并使用过 Conductor
-- 本机存在 Conductor DB：
+- Conductor is already installed and has been used on macOS
+- The local Conductor DB exists at:
   `~/Library/Application Support/com.conductor.app/conductor.db`
-- 本机存在 Codex 二进制：
+- The local Codex binary exists at:
   `~/Library/Application Support/com.conductor.app/bin/codex`
-- 有一个 Telegram Bot token
+- A Telegram Bot token is available
 
 ## Setup
 
-1. 安装依赖
+1. Install dependencies
 
 ```bash
 npm install
 ```
 
-2. 复制环境变量模板并填写
+2. Copy the environment template and fill it in
 
 ```bash
 cp .env.example .env
 ```
 
-3. 至少设置这两个变量
+3. Set at least these two variables
 
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_ALLOWED_CHAT_IDS`
 
-`TELEGRAM_ALLOWED_CHAT_IDS` 填你自己的 Telegram chat id，多个用逗号分隔。
+Set `TELEGRAM_ALLOWED_CHAT_IDS` to your own Telegram chat ID. Separate multiple IDs with commas.
 
-默认 `BRIDGE_DB_PATH` 是 `.context/bridge.db`。当前版本会在启动时自动创建这个目录，不需要你手动先建 `.context/`。
+`BRIDGE_DB_PATH` defaults to `.context/bridge.db`. The current version creates this directory on startup, so `.context/` does not need to exist in advance.
 
 ## Run
 
@@ -49,7 +49,7 @@ cp .env.example .env
 npm start
 ```
 
-开发模式：
+Development mode:
 
 ```bash
 npm run dev
@@ -72,24 +72,24 @@ npm run dev
 
 ## Basic Flow
 
-1. 在 Telegram 私聊 bot，输入 `/start`
-2. 点 `Switch Repo`
-3. 先选一个 repo
-4. 点 `Switch Branch`
-5. 再选该 repo 下的 branch
-6. 点 `Switch Chat`
-7. 选一个已有 chat
-8. 直接发文本，bridge 会把它继续发到当前 chat
+1. Open a private chat with the bot in Telegram and send `/start`
+2. Tap `Switch Repo`
+3. Select a repo
+4. Tap `Switch Branch`
+5. Select a branch in that repo
+6. Tap `Switch Chat`
+7. Select an existing chat
+8. Send plain text and the bridge will continue the current chat
 
-创建新 chat：
+Create a new chat:
 
-1. 先选定 repo 和 branch
-2. 点 `New Chat Here` 或发 `/new`
-3. 下一条文本会创建一个新的 Conductor chat，并自动切过去
+1. Select a repo and branch first
+2. Tap `New Chat Here` or send `/new`
+3. Your next message will create a new Conductor chat and switch to it automatically
 
 ## Notes
 
-- 当前版本只支持单用户、单私聊
-- 当前版本只支持 Codex session
-- 若 `TELEGRAM_BOT_TOKEN` 未设置，进程不会启动
-- 若 token 无效，bridge 会启动，但 Telegram long polling 会持续返回 401
+- The current version supports a single user in a single private chat
+- The current version only supports Codex sessions
+- The process will not start if `TELEGRAM_BOT_TOKEN` is not set
+- If the token is invalid, the bridge starts but Telegram long polling will keep returning `401`
