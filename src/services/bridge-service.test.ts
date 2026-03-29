@@ -618,6 +618,31 @@ describe("TelegramBridgeService user flows", () => {
     expect(fixture.stateStore.listQueueForSession("session-1", 5)[0]?.text).toBe("Second prompt");
   });
 
+  it("treats short status probes as read-only status checks instead of queueing them", async () => {
+    const workspace = createWorkspace({
+      activeSessionId: "session-1",
+    });
+    const session = createSession({
+      status: "working",
+    });
+    const fixture = createFixture({
+      workspaces: [workspace],
+      sessions: [session],
+    });
+    fixture.stateStore.updateChatContext(chatId, {
+      activeWorkspaceId: "workspace-1",
+      activeSessionId: "session-1",
+      followSessionId: "session-1",
+    });
+
+    await handleUpdate(fixture, messageUpdate("目前什么状态"));
+
+    expect(fixture.codex.startedTurns).toHaveLength(0);
+    expect(fixture.stateStore.listQueueForSession("session-1", 5)).toHaveLength(0);
+    expect(fixture.telegram.sentMessages[0]?.text).toContain("Home");
+    expect(fixture.telegram.sentMessages[0]?.text).toContain("working");
+  });
+
   it("interrupts the active turn with /stop", async () => {
     const workspace = createWorkspace({
       activeSessionId: "session-1",

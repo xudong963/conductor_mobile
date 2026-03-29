@@ -32,6 +32,7 @@ import {
   sanitizeSessionTitle,
   truncate,
 } from "../utils/text.js";
+import { isStatusProbeText } from "../utils/intent.js";
 import { logger } from "../utils/logger.js";
 
 interface BridgeConfig {
@@ -200,6 +201,7 @@ export class TelegramBridgeService {
             "/help",
             "",
             "Plain text continues the currently selected session.",
+            "Short status questions like 'status' or '目前什么状态' show the current status.",
           ].join("\n"),
         );
       } else if (data === "home:stop") {
@@ -287,6 +289,7 @@ export class TelegramBridgeService {
             "/cancel",
             "",
             "Send text directly to continue the current session.",
+            "Short status questions like 'status' or '目前什么状态' show the current status.",
           ].join("\n"),
         );
         break;
@@ -294,6 +297,11 @@ export class TelegramBridgeService {
   }
 
   private async handlePlainText(chatId: number, text: string): Promise<void> {
+    if (isStatusProbeText(text)) {
+      await this.showHome(chatId);
+      return;
+    }
+
     const ctx = this.stateStore.getChatContext(chatId);
 
     if (ctx.composeMode === "new_session") {
@@ -491,7 +499,13 @@ export class TelegramBridgeService {
 
     const modeText = ctx.composeMode === "none" ? "" : `\nmode: ${ctx.composeMode} (exits after the next message)\n`;
 
-    const text = ["Home", statusLine, modeText, "Send text to continue the current session."].join("\n");
+    const text = [
+      "Home",
+      statusLine,
+      modeText,
+      "Send text to continue the current session.",
+      "Short status questions like 'status' or '目前什么状态' show the current status.",
+    ].join("\n");
     await this.telegram.sendMessage(chatId, text, {
       reply_markup: { inline_keyboard: homeKeyboard({ showStop: this.canInterruptTurn(runtime) }) },
     });
