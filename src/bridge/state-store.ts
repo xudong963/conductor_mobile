@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import type { ChatContext, ComposeMode, QueueItem, QueueKind } from "../types.js";
 
 export class BridgeStateStore {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
 
   constructor(dbPath: string) {

@@ -462,7 +462,10 @@ class TelegramConductorBridge {
       this.stateStore.updateChatContext(chatId, { activeSessionId: null });
     }
 
-    await this.showSessions(chatId, `已切换到 workspace：${formatWorkspaceLabel(workspace, { includeDirectory: true })}`);
+    await this.showSessions(
+      chatId,
+      `已切换到 workspace：${formatWorkspaceLabel(workspace, { includeDirectory: true })}`,
+    );
   }
 
   private async selectSession(chatId: number, sessionId: string): Promise<void> {
@@ -809,10 +812,7 @@ class TelegramConductorBridge {
     await this.safeSendMessage(chatId, "发下一条文本作为回答。");
   }
 
-  private buildInputAnswers(
-    questions: PendingInputQuestion[],
-    text: string,
-  ): Record<string, { answers: string[] }> {
+  private buildInputAnswers(questions: PendingInputQuestion[], text: string): Record<string, { answers: string[] }> {
     if (questions.length === 0) {
       return {};
     }
@@ -1191,12 +1191,7 @@ class TelegramConductorBridge {
     }
   }
 
-  private ensureRuntime(
-    sessionId: string,
-    threadId: string,
-    turnId: string,
-    model: string | null,
-  ): RuntimeState {
+  private ensureRuntime(sessionId: string, threadId: string, turnId: string, model: string | null): RuntimeState {
     const existing = this.runtimes.get(sessionId);
     if (existing && existing.turnId === turnId) {
       return existing;
@@ -1259,10 +1254,10 @@ class TelegramConductorBridge {
     }
     const workspace = this.registry.getWorkspaceById(session.workspaceId);
     const body =
-      bodyOverride
-      ?? runtime.planText
-      ?? runtime.assistantText
-      ?? (runtime.status === "waiting_user_input"
+      bodyOverride ??
+      runtime.planText ??
+      runtime.assistantText ??
+      (runtime.status === "waiting_user_input"
         ? "等待你的回复。"
         : runtime.status === "waiting_plan"
           ? "等待你确认计划。"
@@ -1277,8 +1272,8 @@ class TelegramConductorBridge {
       3800,
     );
     const markup =
-      keyboard
-      ?? (runtime.status === "waiting_plan"
+      keyboard ??
+      (runtime.status === "waiting_plan"
         ? planKeyboard()
         : runtime.status === "waiting_user_input"
           ? replyKeyboard()

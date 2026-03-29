@@ -24,10 +24,7 @@ function loadEnvFile(filePath: string): void {
     if (!key || process.env[key] !== undefined) {
       continue;
     }
-    if (
-      (value.startsWith("\"") && value.endsWith("\""))
-      || (value.startsWith("'") && value.endsWith("'"))
-    ) {
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
     process.env[key] = value;
@@ -47,12 +44,8 @@ const schema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(10),
   TELEGRAM_ALLOWED_CHAT_IDS: z.string().optional(),
   BRIDGE_DB_PATH: z.string().default(".context/bridge.db"),
-  CONDUCTOR_DB_PATH: z
-    .string()
-    .default("~/Library/Application Support/com.conductor.app/conductor.db"),
-  CODEX_BIN: z
-    .string()
-    .default("~/Library/Application Support/com.conductor.app/bin/codex"),
+  CONDUCTOR_DB_PATH: z.string().default("~/Library/Application Support/com.conductor.app/conductor.db"),
+  CODEX_BIN: z.string().default("~/Library/Application Support/com.conductor.app/bin/codex"),
   WORKSPACES_ROOT: z.string().default("~/conductor/workspaces"),
   POLL_TIMEOUT_SECONDS: z.coerce.number().int().min(5).max(50).default(30),
   QUEUE_TICK_MS: z.coerce.number().int().min(500).default(3000),
