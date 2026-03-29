@@ -8,8 +8,11 @@ Control the local Conductor instance from a Telegram private chat on your phone.
 - Continuing existing Codex sessions
 - Creating a new Conductor chat on the current branch
 - Basic queueing
-- Basic streamed text updates
+- Streamed text updates on a reusable single-message status panel
+- A single-message paginated context viewer
 - Basic `requestUserInput` and plan feedback flows
+- Telegram slash command syncing
+- Telegram slash command syncing
 
 ## Prerequisites
 
@@ -57,18 +60,17 @@ npm run dev
 
 ## Telegram Commands
 
-- `/start`
-- `/home`
-- `/repos`
-- `/branches`
-- `/chats`
-- `/workspaces`
-- `/sessions`
-- `/status`
-- `/queue`
-- `/context [N]`
-- `/new`
-- `/help`
+- `/start` or `/home`: return to the home screen
+- `/repos` or `/workspaces`: choose a repo
+- `/branches`: choose a branch
+- `/chats` or `/sessions`: choose a chat
+- `/status`: open or refresh the current chat's single-message status panel
+- `/queue`: inspect the current chat queue
+- `/context [N]`: open a paginated single-message context viewer with older/newer, refresh, and close controls
+- `/new`: make the next plain-text message create a new chat on the current branch
+- `/help`: show help
+
+On startup the bridge calls Telegram `setMyCommands`, so these slash commands also appear in the mobile command picker.
 
 ## Basic Flow
 
@@ -80,12 +82,19 @@ npm run dev
 6. Tap `Switch Chat`
 7. Select an existing chat
 8. Send plain text and the bridge will continue the current chat
+9. For a quick command reference, send `/help` or tap `Help` on the home screen
 
 Create a new chat:
 
 1. Select a repo and branch first
 2. Tap `New Chat Here` or send `/new`
 3. Your next message will create a new Conductor chat and switch to it automatically
+
+## Output Model
+
+- `/status` creates or refreshes a reusable status panel; subsequent runtime output edits that same message instead of appending a new one.
+- `/context [N]` opens a separate context preview card; paging and refresh actions only update that single message.
+- Both the status panel and the context preview can be closed to keep the Telegram chat tidy.
 
 ## Notes
 

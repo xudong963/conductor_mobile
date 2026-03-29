@@ -185,6 +185,22 @@ export class TelegramBridgeService {
         await this.showWorkspaces(chatId, "Select a repo");
       } else if (data === "home:inbox") {
         await this.showInbox(chatId);
+      } else if (data === "home:help") {
+        await this.telegram.sendMessage(
+          chatId,
+          [
+            "/home",
+            "/workspaces",
+            "/sessions",
+            "/new",
+            "/inbox",
+            "/queue",
+            "/cancel",
+            "/help",
+            "",
+            "Plain text continues the currently selected session.",
+          ].join("\n"),
+        );
       } else if (data === "back:home") {
         await this.showHome(chatId);
       } else if (data.startsWith("workspace:")) {

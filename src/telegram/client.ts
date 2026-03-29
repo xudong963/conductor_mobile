@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { TelegramInlineKeyboard, TelegramSendMessageOptions, TelegramUpdate } from "../types.js";
+import type { TelegramBotCommand, TelegramInlineKeyboard, TelegramSendMessageOptions, TelegramUpdate } from "../types.js";
 
 const POLL_RETRY_DELAY_MS = 750;
 const POLL_TIMEOUT_BUFFER_MS = 10_000;
@@ -154,6 +154,22 @@ export class TelegramClient {
       text,
       reply_markup: inlineKeyboard ? { inline_keyboard: inlineKeyboard } : undefined,
       disable_web_page_preview: true,
+    });
+  }
+
+  async deleteMessage(chatId: number, messageId: number): Promise<void> {
+    await this.callApi("deleteMessage", {
+      chat_id: chatId,
+      message_id: messageId,
+    });
+  }
+
+  async setMyCommands(commands: TelegramBotCommand[]): Promise<void> {
+    await this.callApi("setMyCommands", {
+      commands: commands.map((command) => ({
+        command: command.command,
+        description: command.description,
+      })),
     });
   }
 
