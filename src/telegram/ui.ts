@@ -20,6 +20,7 @@ export function homeKeyboard(): TelegramInlineKeyboard {
       { text: "Switch Chat", callback_data: "home:sessions" },
       { text: "Inbox", callback_data: "home:inbox" },
     ],
+    [{ text: "Help", callback_data: "home:help" }],
   ];
 }
 

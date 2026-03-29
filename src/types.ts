@@ -136,6 +136,11 @@ export interface TelegramSendMessageOptions {
   disable_web_page_preview?: boolean;
 }
 
+export interface TelegramBotCommand {
+  command: string;
+  description: string;
+}
+
 export interface CodexNotification {
   method: string;
   params: Record<string, unknown>;
