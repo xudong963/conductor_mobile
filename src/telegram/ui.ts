@@ -51,7 +51,10 @@ export function inboxKeyboard(sessions: ConductorSessionRef[]): TelegramInlineKe
       callback_data: `session:${session.id}`,
     },
   ]);
-  rows.push([{ text: "Refresh", callback_data: "home:inbox" }, { text: "Back", callback_data: "back:home" }]);
+  rows.push([
+    { text: "Refresh", callback_data: "home:inbox" },
+    { text: "Back", callback_data: "back:home" },
+  ]);
   return rows;
 }
 

@@ -4,12 +4,15 @@ import { CodexAppServerAdapter } from "../adapters/codex-app-server.js";
 import { ConductorMirrorWriter } from "../adapters/conductor-mirror.js";
 import { ConductorRegistryAdapter } from "../adapters/conductor-registry.js";
 import { BridgeStateStore } from "../bridge/state-store.js";
+import { isTransientTelegramNetworkError, summarizeTelegramNetworkError, TelegramClient } from "../telegram/client.js";
 import {
-  isTransientTelegramNetworkError,
-  summarizeTelegramNetworkError,
-  TelegramClient,
-} from "../telegram/client.js";
-import { homeKeyboard, inboxKeyboard, planKeyboard, replyKeyboard, sessionsKeyboard, workspacesKeyboard } from "../telegram/ui.js";
+  homeKeyboard,
+  inboxKeyboard,
+  planKeyboard,
+  replyKeyboard,
+  sessionsKeyboard,
+  workspacesKeyboard,
+} from "../telegram/ui.js";
 import type {
   ChatContext,
   CodexNotification,
@@ -168,7 +171,10 @@ export class TelegramBridgeService {
           await this.showWorkspaces(chatId, "先选 workspace，再创建新会话。");
         } else {
           this.stateStore.setComposeMode(chatId, "new_session", { composeWorkspaceId: ctx.activeWorkspaceId });
-          await this.telegram.sendMessage(chatId, "New Chat Here 已激活。下一条消息会在当前 workspace 创建新 session。");
+          await this.telegram.sendMessage(
+            chatId,
+            "New Chat Here 已激活。下一条消息会在当前 workspace 创建新 session。",
+          );
         }
       } else if (data === "home:sessions") {
         await this.showSessions(chatId);
@@ -252,7 +258,7 @@ export class TelegramBridgeService {
   }
 
   private async handlePlainText(chatId: number, text: string): Promise<void> {
-    let ctx = this.stateStore.getChatContext(chatId);
+    const ctx = this.stateStore.getChatContext(chatId);
 
     if (ctx.composeMode === "new_session") {
       const workspaceId = ctx.composeWorkspaceId ?? ctx.activeWorkspaceId;
@@ -275,7 +281,6 @@ export class TelegramBridgeService {
     }
 
     const resolved = await this.ensureContextSession(chatId, ctx);
-    ctx = resolved.context;
     if (!resolved.session) {
       await this.showWorkspaces(chatId, "还没有当前 session，先选 workspace。");
       return;
@@ -348,7 +353,10 @@ export class TelegramBridgeService {
     this.stateStore.clearComposeMode(chatId);
 
     this.ensureRuntime(session);
-    await this.telegram.sendMessage(chatId, `已新建 session: ${session.title ?? session.id.slice(0, 8)}，开始执行首轮。`);
+    await this.telegram.sendMessage(
+      chatId,
+      `已新建 session: ${session.title ?? session.id.slice(0, 8)}，开始执行首轮。`,
+    );
 
     try {
       await this.startPrompt(session, openingPrompt, null);
@@ -395,10 +403,7 @@ export class TelegramBridgeService {
       session?.status ?? null,
     );
 
-    const modeText =
-      ctx.composeMode === "none"
-        ? ""
-        : `\nmode: ${ctx.composeMode} (下一条文本生效后自动退出)\n`;
+    const modeText = ctx.composeMode === "none" ? "" : `\nmode: ${ctx.composeMode} (下一条文本生效后自动退出)\n`;
 
     const text = [`Home`, statusLine, modeText, `发送文本可继续当前 session。`].join("\n");
     await this.telegram.sendMessage(chatId, text, {
@@ -750,7 +755,11 @@ export class TelegramBridgeService {
     this.mirror.updateSessionStatus(session.id, "needs_user_input");
 
     const question = extractHumanText(params);
-    await this.notifyFollowers(session.id, question ? `需要你的输入：\n${question}` : "当前回合需要你的输入。", replyKeyboard());
+    await this.notifyFollowers(
+      session.id,
+      question ? `需要你的输入：\n${question}` : "当前回合需要你的输入。",
+      replyKeyboard(),
+    );
   }
 
   private async handleThreadStatusChanged(params: Record<string, unknown>): Promise<void> {
@@ -985,7 +994,11 @@ export class TelegramBridgeService {
   private async notifyFollowers(sessionId: string, text: string, keyboard?: TelegramInlineKeyboard): Promise<void> {
     const chats = this.stateStore.listFollowingChats(sessionId);
     for (const chatId of chats) {
-      await this.telegram.sendMessage(chatId, text, keyboard ? { reply_markup: { inline_keyboard: keyboard } } : undefined);
+      await this.telegram.sendMessage(
+        chatId,
+        text,
+        keyboard ? { reply_markup: { inline_keyboard: keyboard } } : undefined,
+      );
     }
   }
 }

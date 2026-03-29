@@ -1,10 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import type {
-  TelegramInlineKeyboard,
-  TelegramSendMessageOptions,
-  TelegramUpdate,
-} from "../types.js";
+import type { TelegramInlineKeyboard, TelegramSendMessageOptions, TelegramUpdate } from "../types.js";
 
 const POLL_RETRY_DELAY_MS = 750;
 const POLL_TIMEOUT_BUFFER_MS = 10_000;
@@ -123,7 +119,7 @@ export class TelegramClient {
             allowed_updates: ["message", "callback_query"],
           },
           {
-            timeoutMs: (timeoutSeconds * 1000) + POLL_TIMEOUT_BUFFER_MS,
+            timeoutMs: timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS,
           },
         );
         return response.result ?? [];

@@ -26,7 +26,10 @@ export function extractHumanText(payload: unknown): string {
     return "";
   }
   if (Array.isArray(payload)) {
-    return payload.map((x) => extractHumanText(x)).filter(Boolean).join("\n");
+    return payload
+      .map((x) => extractHumanText(x))
+      .filter(Boolean)
+      .join("\n");
   }
   if (typeof payload === "object") {
     const maybe = payload as Record<string, unknown>;
@@ -38,10 +41,11 @@ export function extractHumanText(payload: unknown): string {
     if (fromPreferred) {
       return fromPreferred;
     }
-    return Object.values(maybe)
-      .map((value) => extractHumanText(value))
-      .find(Boolean)
-      ?? "";
+    return (
+      Object.values(maybe)
+        .map((value) => extractHumanText(value))
+        .find(Boolean) ?? ""
+    );
   }
   return String(payload);
 }
