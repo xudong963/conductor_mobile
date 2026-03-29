@@ -33,7 +33,7 @@ export function formatBranchName(workspace: Pick<WorkspaceRef, "branch" | "direc
 }
 
 export function formatWorkspaceOptionName(
-  workspace: Pick<WorkspaceRef, "prTitle" | "directoryName" | "branch"> | null | undefined,
+  workspace: Pick<WorkspaceRef, "prTitle" | "activeSessionTitle" | "directoryName" | "branch"> | null | undefined,
 ): string {
   if (!workspace) {
     return "No workspace";
@@ -42,6 +42,11 @@ export function formatWorkspaceOptionName(
   const prTitle = workspace.prTitle?.trim();
   if (prTitle) {
     return prTitle;
+  }
+
+  const activeSessionTitle = workspace.activeSessionTitle?.trim();
+  if (activeSessionTitle) {
+    return activeSessionTitle;
   }
 
   const directoryName = workspace.directoryName.trim();
@@ -53,7 +58,7 @@ export function formatWorkspaceOptionName(
 }
 
 export function formatBranchButtonLabel(
-  workspace: Pick<WorkspaceRef, "prTitle" | "branch" | "directoryName">,
+  workspace: Pick<WorkspaceRef, "prTitle" | "activeSessionTitle" | "branch" | "directoryName">,
   index: number,
   max = 60,
 ): string {
@@ -89,7 +94,7 @@ export function formatSessionPickerText(
 }
 
 export function formatBranchPickerText(
-  workspaces: Array<Pick<WorkspaceRef, "id" | "prTitle" | "branch" | "directoryName">>,
+  workspaces: Array<Pick<WorkspaceRef, "id" | "prTitle" | "activeSessionTitle" | "branch" | "directoryName">>,
   options?: {
     activeWorkspaceId?: string | null | undefined;
     heading?: string | undefined;
