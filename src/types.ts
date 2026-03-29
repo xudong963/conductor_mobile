@@ -15,6 +15,7 @@ export interface WorkspaceRef {
   id: string;
   directoryName: string;
   branch: string | null;
+  prTitle?: string | null;
   repositoryId: string;
   activeSessionId: string | null;
   updatedAt: string;

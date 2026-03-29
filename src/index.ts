@@ -34,6 +34,7 @@ import {
   formatSessionPickerText,
   formatSessionTitle,
   formatStatusLine,
+  formatWorkspaceOptionName,
   sanitizeSessionTitle,
   truncate,
 } from "./utils/text.js";
@@ -542,7 +543,7 @@ class TelegramConductorBridge {
   private async selectBranch(chatId: number, workspaceId: string): Promise<void> {
     const workspace = this.registry.getWorkspaceById(workspaceId);
     if (!workspace) {
-      await this.safeSendMessage(chatId, "Branch not found.");
+      await this.safeSendMessage(chatId, "Workspace not found.");
       return;
     }
 
@@ -558,7 +559,14 @@ class TelegramConductorBridge {
     }
     this.stateStore.clearComposeMode(chatId);
 
-    await this.showChats(chatId, `Switched to branch: ${formatBranchName(workspace)}`, workspace.id);
+    const workspaceName = formatWorkspaceOptionName(workspace);
+    const branchName = formatBranchName(workspace);
+    const prefix =
+      workspaceName === branchName
+        ? `Switched to branch: ${branchName}`
+        : `Switched to branch: ${branchName}\nWorkspace: ${workspaceName}`;
+
+    await this.showChats(chatId, prefix, workspace.id);
   }
 
   private async selectChat(chatId: number, sessionId: string): Promise<void> {
@@ -622,7 +630,10 @@ class TelegramConductorBridge {
 
     const workspaces = this.registry.listWorkspacesForRepository(targetRepositoryId, config.pageSize);
     if (workspaces.length === 0) {
-      await this.safeSendMessage(chatId, `${prefix ? `${prefix}\n\n` : ""}There are no branches in the current repo.`);
+      await this.safeSendMessage(
+        chatId,
+        `${prefix ? `${prefix}\n\n` : ""}There are no workspaces in the current repo.`,
+      );
       return;
     }
 

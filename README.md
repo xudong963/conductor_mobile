@@ -3,7 +3,7 @@
 Control the local Conductor instance from a Telegram private chat on your phone. The current version supports:
 
 - Browsing repos
-- Browsing and switching branches
+- Browsing and switching branches with workspace descriptions
 - Browsing and switching chats
 - Continuing existing Codex sessions
 - Creating a new Conductor chat on the current branch
