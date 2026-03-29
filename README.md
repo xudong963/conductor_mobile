@@ -81,8 +81,9 @@ On startup the bridge calls Telegram `setMyCommands`, so these slash commands al
 5. Select a branch in that repo
 6. Tap `Switch Chat`
 7. Select an existing chat
-8. Send plain text and the bridge will continue the current chat
-9. For a quick command reference, send `/help` or tap `Help` on the home screen
+8. In topic-enabled supergroups, the bridge opens that chat's dedicated topic and streams follow-up output there
+9. Send plain text in the chat or its dedicated topic to continue the current chat
+10. For a quick command reference, send `/help` or tap `Help` on the home screen
 
 Create a new chat:
 
@@ -90,12 +91,14 @@ Create a new chat:
 2. Tap `New Chat Here` or send `/new`
 3. Your next message will create a new Conductor chat and switch to it automatically
 4. If the current Telegram conversation supports topics, the bridge also creates a dedicated topic for that new chat and sends follow-up updates there
+5. Existing chats reuse their previously bound topic, so one Conductor chat stays attached to one Telegram topic
 
 ## Output Model
 
 - `/status` creates or refreshes a reusable status panel; subsequent runtime output edits that same message instead of appending a new one.
 - `/context [N]` opens a separate context preview card; paging and refresh actions only update that single message.
-- In topic-enabled chats, both panels are scoped to the current topic instead of the whole Telegram chat.
+- In topic-enabled chats, each Conductor chat can stream in its dedicated topic instead of the root Telegram chat.
+- Both panels stay scoped to the current topic instead of the whole Telegram chat.
 - Both the status panel and the context preview can be closed to keep the Telegram chat tidy.
 
 ## Notes

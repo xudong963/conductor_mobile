@@ -66,6 +66,26 @@ describe("BridgeStateStore conversation contexts", () => {
     ]);
   });
 
+  it("stores a dedicated topic per session and chat", () => {
+    const { store } = createStore();
+    const topic = { chatId: 42, messageThreadId: 7 };
+
+    store.bindSessionTopic("session-1", topic);
+
+    expect(store.getSessionTopic("session-1", 42)).toEqual(topic);
+  });
+
+  it("can bootstrap a topic binding from an existing following topic", () => {
+    const { store } = createStore();
+    const root = { chatId: 42, messageThreadId: null };
+    const topic = { chatId: 42, messageThreadId: 8 };
+
+    store.setConversationActiveSession(root, "session-1");
+    store.setConversationActiveSession(topic, "session-1");
+
+    expect(store.findFollowingTopic("session-1", 42)).toEqual(topic);
+  });
+
   it("migrates legacy root chat contexts into conversation contexts", () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "state-store-migrate-"));
     const dbPath = path.join(tempDir, "bridge.db");

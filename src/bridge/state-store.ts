@@ -90,6 +90,15 @@ export class BridgeStateStore {
 
       CREATE INDEX IF NOT EXISTS conversation_context_follow_session_idx
       ON conversation_context (follow_session_id);
+
+      CREATE TABLE IF NOT EXISTS session_topic_binding (
+        session_id TEXT NOT NULL,
+        chat_id INTEGER NOT NULL,
+        message_thread_id INTEGER NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (session_id, chat_id),
+        UNIQUE (chat_id, message_thread_id)
+      );
     `);
 
     this.db.exec(`
@@ -415,6 +424,82 @@ export class BridgeStateStore {
         `,
       )
       .all(sessionId) as TelegramConversationTarget[];
+  }
+
+  findFollowingTopic(sessionId: string, chatId: number): TelegramConversationTarget | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            chat_id as chatId,
+            NULLIF(message_thread_id, 0) as messageThreadId
+          FROM conversation_context
+          WHERE follow_session_id = ?
+            AND chat_id = ?
+            AND message_thread_id != 0
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `,
+      )
+      .get(sessionId, chatId) as TelegramConversationTarget | undefined;
+    return row ?? null;
+  }
+
+  getSessionTopic(sessionId: string, chatId: number): TelegramConversationTarget | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            chat_id as chatId,
+            NULLIF(message_thread_id, 0) as messageThreadId
+          FROM session_topic_binding
+          WHERE session_id = ?
+            AND chat_id = ?
+          LIMIT 1
+        `,
+      )
+      .get(sessionId, chatId) as TelegramConversationTarget | undefined;
+    return row ?? null;
+  }
+
+  bindSessionTopic(sessionId: string, target: TelegramConversationTarget): TelegramConversationTarget {
+    const messageThreadId = this.normalizeMessageThreadId(target.messageThreadId);
+    if (messageThreadId === 0) {
+      throw new Error("Session topics must target a Telegram topic.");
+    }
+
+    const updatedAt = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `
+            DELETE FROM session_topic_binding
+            WHERE (session_id = ? AND chat_id = ?)
+               OR (chat_id = ? AND message_thread_id = ?)
+          `,
+        )
+        .run(sessionId, target.chatId, target.chatId, messageThreadId);
+
+      this.db
+        .prepare(
+          `
+            INSERT INTO session_topic_binding (
+              session_id,
+              chat_id,
+              message_thread_id,
+              updated_at
+            )
+            VALUES (?, ?, ?, ?)
+          `,
+        )
+        .run(sessionId, target.chatId, messageThreadId, updatedAt);
+    });
+
+    tx();
+    return {
+      chatId: target.chatId,
+      messageThreadId,
+    };
   }
 
   listFollowingChats(sessionId: string): number[] {
