@@ -65,6 +65,7 @@ npm run dev
 - `/branches`: choose a branch
 - `/chats` or `/sessions`: choose a chat
 - `/status`: open or refresh the current chat's status panel
+- `/stop`: interrupt the current turn
 - `/queue`: inspect the current chat queue
 - `/context [N]`: open a paginated single-message context viewer with older/newer, refresh, and close controls
 - `/new`: make the next plain-text message create a new chat on the current branch

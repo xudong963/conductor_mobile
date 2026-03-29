@@ -47,3 +47,24 @@ describe("CodexAppServerAdapter.resumeThread", () => {
     ).rejects.toBe(error);
   });
 });
+
+describe("CodexAppServerAdapter.interruptTurn", () => {
+  it("sends the turn/interrupt request with thread and turn ids", async () => {
+    const adapter = new CodexAppServerAdapter("/tmp/codex");
+    const request = vi.fn().mockResolvedValue({});
+
+    (adapter as unknown as { request: typeof request }).request = request;
+
+    await expect(
+      adapter.interruptTurn({
+        threadId: "thread-1",
+        turnId: "turn-7",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(request).toHaveBeenCalledWith("turn/interrupt", {
+      threadId: "thread-1",
+      turnId: "turn-7",
+    });
+  });
+});
