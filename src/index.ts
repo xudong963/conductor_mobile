@@ -1525,11 +1525,7 @@ class TelegramConductorBridge {
     }
   }
 
-  private async safeSendMessage(
-    chatId: number,
-    text: string,
-    keyboard?: TelegramInlineKeyboard,
-  ): Promise<void> {
+  private async safeSendMessage(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void> {
     await this.telegram.sendMessage(
       chatId,
       truncate(text, 3800),
@@ -1625,7 +1621,8 @@ class TelegramConductorBridge {
   ): Promise<void> {
     const context = this.stateStore.getChatContext(chatId);
     const workspace =
-      options?.workspace ?? (context.activeWorkspaceId ? this.registry.getWorkspaceById(context.activeWorkspaceId) : null);
+      options?.workspace ??
+      (context.activeWorkspaceId ? this.registry.getWorkspaceById(context.activeWorkspaceId) : null);
     const session = options?.session ?? this.resolveSelectedSession(chatId);
     const runtime = options?.runtime ?? (session ? (this.runtimes.get(session.id) ?? null) : null);
     const queueCount = session
@@ -1635,7 +1632,9 @@ class TelegramConductorBridge {
     const lines = [
       formatStatusLine(
         workspace ? formatRepositoryLabel(workspace) : selectedRepositoryLabel(workspace),
-        session ? `${selectedBranchLabel(workspace)} / ${formatSessionTitle(session.title)}` : selectedChatLabel(session),
+        session
+          ? `${selectedBranchLabel(workspace)} / ${formatSessionTitle(session.title)}`
+          : selectedChatLabel(session),
         this.sessionStatusLabel(session, runtime),
       ),
       `Queued: ${queueCount}`,

@@ -1,6 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { TelegramBotCommand, TelegramInlineKeyboard, TelegramSendMessageOptions, TelegramUpdate } from "../types.js";
+import type {
+  TelegramBotCommand,
+  TelegramInlineKeyboard,
+  TelegramSendMessageOptions,
+  TelegramUpdate,
+} from "../types.js";
 
 const POLL_RETRY_DELAY_MS = 750;
 const POLL_TIMEOUT_BUFFER_MS = 10_000;
