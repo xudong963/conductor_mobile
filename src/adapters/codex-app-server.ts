@@ -44,6 +44,11 @@ interface SteerTurnOptions {
   input: string;
 }
 
+interface InterruptTurnOptions {
+  threadId: string;
+  turnId: string;
+}
+
 const BRIDGE_ONLY_ENV_KEYS = [
   "BRIDGE_DB_PATH",
   "CODEX_BIN",
@@ -238,6 +243,13 @@ export class CodexAppServerAdapter extends EventEmitter {
       threadId: options.threadId,
       expectedTurnId: options.expectedTurnId,
       input: [{ type: "text", text: options.input }],
+    });
+  }
+
+  async interruptTurn(options: InterruptTurnOptions): Promise<void> {
+    await this.request("turn/interrupt", {
+      threadId: options.threadId,
+      turnId: options.turnId,
     });
   }
 

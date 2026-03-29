@@ -92,7 +92,7 @@ interface RuntimeState {
   model: string | null;
   planText: string | null;
   sessionId: string;
-  status: "active" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
+  status: "active" | "cancelling" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
   threadId: string;
   turnId: string;
 }
@@ -193,6 +193,7 @@ const BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "workspaces", description: "Choose a repo" },
   { command: "sessions", description: "Choose a chat" },
   { command: "status", description: "Refresh the current status panel" },
+  { command: "stop", description: "Interrupt the current turn" },
   { command: "queue", description: "Show the current chat queue" },
   { command: "context", description: "Open the recent context viewer" },
   { command: "new", description: "Create a new chat with the next message" },
@@ -212,6 +213,7 @@ function buildHelpText(): string {
     "/workspaces  Choose a repo",
     "/sessions  Choose a chat",
     "/status  Open or refresh the current status panel",
+    "/stop  Interrupt the current turn",
     "/queue  Show the current chat queue",
     "/context [N]  Open the paginated recent context viewer",
     "/new  Make the next message create a new chat on the current branch",
@@ -483,6 +485,12 @@ export class TelegramConductorBridge {
       return;
     }
 
+    if (data === "home:stop") {
+      const text = await this.interruptCurrentTurn(location, { suppressMessage: true });
+      await this.telegram.answerCallbackQuery(callback.id, text);
+      return;
+    }
+
     if (data === "back:home") {
       await this.telegram.answerCallbackQuery(callback.id);
       await this.showHome(location);
@@ -568,6 +576,9 @@ export class TelegramConductorBridge {
         return;
       case "/status":
         await this.showStatus(location);
+        return;
+      case "/stop":
+        await this.interruptCurrentTurn(location);
         return;
       case "/queue":
         await this.showQueue(location);
@@ -857,7 +868,7 @@ export class TelegramConductorBridge {
     if (location.messageThreadId !== null) {
       lines.push(`Topic: ${location.messageThreadId}`);
     }
-    await this.safeSendMessage(location, lines.join("\n"), homeKeyboard());
+    await this.safeSendMessage(location, lines.join("\n"), homeKeyboard({ showStop: this.canInterruptTurn(runtime) }));
   }
 
   private async showRepositories(location: TelegramConversationTarget, prefix?: string): Promise<void> {
@@ -1287,6 +1298,60 @@ export class TelegramConductorBridge {
       composeTargetTurnId: runtime.turnId,
     });
     await this.safeSendMessage(location, "Send your next message as the reply.");
+  }
+
+  private canInterruptTurn(runtime: RuntimeState | null): boolean {
+    return Boolean(runtime && !["completed", "failed"].includes(runtime.status));
+  }
+
+  private async interruptCurrentTurn(
+    location: TelegramConversationTarget,
+    options?: { suppressMessage?: boolean },
+  ): Promise<string> {
+    const session = this.resolveSelectedSession(location);
+    if (!session) {
+      const text = "Select a chat first.";
+      if (!options?.suppressMessage) {
+        await this.safeSendMessage(location, text);
+      }
+      return text;
+    }
+
+    const runtime = this.runtimes.get(session.id) ?? null;
+    if (!runtime?.turnId) {
+      const text =
+        session.status === "working" || session.status === "cancelling"
+          ? "This chat is busy, but the active turn cannot be interrupted from the bridge right now."
+          : "There is no active turn to interrupt.";
+      if (!options?.suppressMessage) {
+        await this.safeSendMessage(location, text);
+      }
+      return text;
+    }
+
+    if (runtime.status === "cancelling") {
+      const text = "Interrupt already requested.";
+      if (!options?.suppressMessage) {
+        await this.safeSendMessage(location, text);
+      }
+      return text;
+    }
+
+    await this.codex.interruptTurn({
+      threadId: runtime.threadId,
+      turnId: runtime.turnId,
+    });
+    runtime.status = "cancelling";
+    this.pendingInputRequests.delete(session.id);
+    this.stateStore.clearConversationComposeMode(location);
+    this.mirror.updateSessionStatus(session.id, "cancelling");
+    await this.pushRuntimeUpdate(runtime, "Interrupt requested...");
+
+    const text = "Interrupt requested.";
+    if (!options?.suppressMessage) {
+      await this.safeSendMessage(location, text);
+    }
+    return text;
   }
 
   private buildInputAnswers(questions: PendingInputQuestion[], text: string): Record<string, { answers: string[] }> {
@@ -1738,6 +1803,8 @@ export class TelegramConductorBridge {
       return session?.status ?? "idle";
     }
     switch (runtime.status) {
+      case "cancelling":
+        return "cancelling";
       case "waiting_plan":
         return "needs_plan_response";
       case "waiting_user_input":
@@ -1770,6 +1837,9 @@ export class TelegramConductorBridge {
     }
     if (runtime.status === "waiting_plan") {
       return "Waiting for your plan approval.";
+    }
+    if (runtime.status === "cancelling") {
+      return "Interrupt requested...";
     }
     return activePlaceholder;
   }
@@ -1952,6 +2022,11 @@ export class TelegramConductorBridge {
         await this.telegram.answerCallbackQuery(callback.id, "Refreshing...");
         await this.renderSessionPanel(location);
         return;
+      case "panel:interrupt": {
+        const text = await this.interruptCurrentTurn(location, { suppressMessage: true });
+        await this.telegram.answerCallbackQuery(callback.id, text);
+        return;
+      }
       case "panel:close":
         await this.telegram.answerCallbackQuery(callback.id);
         await this.closeSessionPanel(location);
@@ -1999,7 +2074,7 @@ export class TelegramConductorBridge {
       lines.push(`Topic: ${location.messageThreadId}`);
     }
     const text = truncate(`${lines.join("\n")}\n\n${body}`, 3800);
-    const keyboard = this.sessionPanelKeyboard(options?.keyboard);
+    const keyboard = this.sessionPanelKeyboard(options?.keyboard, this.canInterruptTurn(runtime));
     await this.upsertSessionPanel(location, session?.id ?? null, text, keyboard);
   }
 
@@ -2089,7 +2164,9 @@ export class TelegramConductorBridge {
           ? "Waiting for your reply."
           : runtime.status === "waiting_plan"
             ? "Waiting for plan approval."
-            : "Processing...")
+            : runtime.status === "cancelling"
+              ? "Interrupt requested..."
+              : "Processing...")
       );
     }
 
@@ -2105,8 +2182,11 @@ export class TelegramConductorBridge {
     return preview ?? "Waiting for new messages.";
   }
 
-  private sessionPanelKeyboard(extraKeyboard?: TelegramInlineKeyboard): TelegramInlineKeyboard {
+  private sessionPanelKeyboard(extraKeyboard?: TelegramInlineKeyboard, showInterrupt = false): TelegramInlineKeyboard {
     const keyboard = extraKeyboard ? extraKeyboard.map((row) => [...row]) : [];
+    if (showInterrupt) {
+      keyboard.push([{ text: "Stop Current Turn", callback_data: "panel:interrupt" }]);
+    }
     keyboard.push([
       { text: "Refresh Status", callback_data: "panel:refresh" },
       { text: "Hide Panel", callback_data: "panel:close" },

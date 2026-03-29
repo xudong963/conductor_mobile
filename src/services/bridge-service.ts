@@ -195,6 +195,7 @@ export class TelegramBridgeService {
             "/sessions",
             "/new",
             "/inbox",
+            "/stop",
             "/queue",
             "/cancel",
             "/help",
@@ -203,6 +204,10 @@ export class TelegramBridgeService {
             "Short status questions like 'status' or '目前什么状态' show the current status.",
           ].join("\n"),
         );
+      } else if (data === "home:stop") {
+        const text = await this.interruptCurrentTurn(chatId, { suppressMessage: true });
+        await this.telegram.answerCallbackQuery(query.id, text);
+        return;
       } else if (data === "back:home") {
         await this.showHome(chatId);
       } else if (data.startsWith("workspace:")) {
@@ -259,6 +264,9 @@ export class TelegramBridgeService {
       case "/inbox":
         await this.showInbox(chatId);
         break;
+      case "/stop":
+        await this.interruptCurrentTurn(chatId);
+        break;
       case "/queue":
         await this.showQueue(chatId);
         break;
@@ -275,6 +283,7 @@ export class TelegramBridgeService {
             "/workspaces",
             "/sessions",
             "/new",
+            "/stop",
             "/inbox",
             "/queue",
             "/cancel",
@@ -431,6 +440,49 @@ export class TelegramBridgeService {
     await this.telegram.sendMessage(chatId, mode === "plan_feedback" ? "Submitted plan feedback." : "Submitted input.");
   }
 
+  private canInterruptTurn(runtime: RuntimeState | null): boolean {
+    return Boolean(runtime?.activeTurnId);
+  }
+
+  private async interruptCurrentTurn(chatId: number, options?: { suppressMessage?: boolean }): Promise<string> {
+    const ctx = this.stateStore.getChatContext(chatId);
+    const session = ctx.activeSessionId ? this.registry.getSessionById(ctx.activeSessionId) : null;
+    if (!session) {
+      const text = "Select a chat first.";
+      if (!options?.suppressMessage) {
+        await this.telegram.sendMessage(chatId, text);
+      }
+      return text;
+    }
+
+    const runtime = this.ensureRuntime(session);
+    if (!runtime.activeTurnId) {
+      const text =
+        session.status === "working" || session.status === "cancelling"
+          ? "This session is busy, but the active turn cannot be interrupted from the bridge right now."
+          : "There is no active turn to interrupt.";
+      if (!options?.suppressMessage) {
+        await this.telegram.sendMessage(chatId, text);
+      }
+      return text;
+    }
+
+    await this.codex.interruptTurn({
+      threadId: runtime.threadId,
+      turnId: runtime.activeTurnId,
+    });
+    runtime.waitingPlan = false;
+    runtime.waitingUserInput = false;
+    this.stateStore.clearComposeMode(chatId);
+    this.mirror.updateSessionStatus(session.id, "cancelling");
+
+    const text = "Interrupt requested.";
+    if (!options?.suppressMessage) {
+      await this.telegram.sendMessage(chatId, text);
+    }
+    return text;
+  }
+
   private async showHome(chatId: number): Promise<void> {
     let ctx = this.stateStore.getChatContext(chatId);
     const resolved = await this.ensureContextSession(chatId, ctx);
@@ -438,6 +490,7 @@ export class TelegramBridgeService {
 
     const workspace = ctx.activeWorkspaceId ? this.registry.getWorkspaceById(ctx.activeWorkspaceId) : null;
     const session = resolved.session;
+    const runtime = session ? (this.runtimeBySession.get(session.id) ?? null) : null;
     const statusLine = formatStatusLine(
       workspace ? formatWorkspaceLabel(workspace, { includeDirectory: true }) : null,
       session?.title ?? null,
@@ -454,7 +507,7 @@ export class TelegramBridgeService {
       "Short status questions like 'status' or '目前什么状态' show the current status.",
     ].join("\n");
     await this.telegram.sendMessage(chatId, text, {
-      reply_markup: { inline_keyboard: homeKeyboard() },
+      reply_markup: { inline_keyboard: homeKeyboard({ showStop: this.canInterruptTurn(runtime) }) },
     });
   }
 
@@ -882,7 +935,8 @@ export class TelegramBridgeService {
 
     await this.flushFinalStream(runtime, turnId, buffer);
 
-    const failed = turn.status === "failed" || turn.status === "interrupted";
+    const failed = turn.status === "failed";
+    const interrupted = turn.status === "interrupted";
     let nextStatus: SessionStatus;
     if (runtime.waitingUserInput) {
       nextStatus = "needs_user_input";
@@ -896,7 +950,10 @@ export class TelegramBridgeService {
     this.mirror.updateSessionStatus(session.id, nextStatus);
 
     if (runtime.currentQueueItemId !== null) {
-      this.stateStore.markPromptFinished(runtime.currentQueueItemId, failed ? "failed" : "finished");
+      this.stateStore.markPromptFinished(
+        runtime.currentQueueItemId,
+        failed ? "failed" : interrupted ? "cancelled" : "finished",
+      );
       runtime.currentQueueItemId = null;
     }
     if (failed && turn.error?.message) {

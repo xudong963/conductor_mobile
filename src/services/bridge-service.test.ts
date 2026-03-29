@@ -287,6 +287,7 @@ class FakeCodexAppServerAdapter {
     turnId: string;
   }> = [];
   readonly steeredTurns: Array<{ threadId: string; expectedTurnId: string; input: string }> = [];
+  readonly interruptedTurns: Array<{ threadId: string; turnId: string }> = [];
   readonly archivedThreads: string[] = [];
   private nextThreadId = 1;
   private nextTurnId = 1;
@@ -332,6 +333,10 @@ class FakeCodexAppServerAdapter {
 
   async steerTurn(options: { threadId: string; expectedTurnId: string; input: string }): Promise<void> {
     this.steeredTurns.push(options);
+  }
+
+  async interruptTurn(options: { threadId: string; turnId: string }): Promise<void> {
+    this.interruptedTurns.push(options);
   }
 }
 
@@ -636,6 +641,60 @@ describe("TelegramBridgeService user flows", () => {
     expect(fixture.stateStore.listQueueForSession("session-1", 5)).toHaveLength(0);
     expect(fixture.telegram.sentMessages[0]?.text).toContain("Home");
     expect(fixture.telegram.sentMessages[0]?.text).toContain("working");
+  });
+
+  it("interrupts the active turn with /stop", async () => {
+    const workspace = createWorkspace({
+      activeSessionId: "session-1",
+    });
+    const session = createSession();
+    const fixture = createFixture({
+      workspaces: [workspace],
+      sessions: [session],
+    });
+    fixture.stateStore.updateChatContext(chatId, {
+      activeWorkspaceId: "workspace-1",
+      activeSessionId: "session-1",
+      followSessionId: "session-1",
+    });
+
+    await handleUpdate(fixture, messageUpdate("First prompt"));
+    await handleUpdate(fixture, messageUpdate("/stop"));
+
+    expect(fixture.codex.interruptedTurns).toEqual([{ threadId: "thread-existing", turnId: "turn-1" }]);
+    expect(fixture.telegram.sentMessages.at(-1)?.text).toBe("Interrupt requested.");
+    expect(fixture.registry.getSessionById("session-1")?.status).toBe("cancelling");
+  });
+
+  it("treats interrupted turns as idle instead of errors", async () => {
+    const workspace = createWorkspace({
+      activeSessionId: "session-1",
+    });
+    const session = createSession();
+    const fixture = createFixture({
+      workspaces: [workspace],
+      sessions: [session],
+    });
+    fixture.stateStore.updateChatContext(chatId, {
+      activeWorkspaceId: "workspace-1",
+      activeSessionId: "session-1",
+      followSessionId: "session-1",
+    });
+
+    await handleUpdate(fixture, messageUpdate("First prompt"));
+    await handleNotification(fixture, {
+      method: "turn/completed",
+      params: {
+        threadId: "thread-existing",
+        turn: {
+          id: "turn-1",
+          status: "interrupted",
+        },
+      },
+    });
+
+    expect(fixture.registry.getSessionById("session-1")?.status).toBe("idle");
+    expect(fixture.mirror.statusUpdates.at(-1)).toEqual({ sessionId: "session-1", status: "idle" });
   });
 
   it("blocks free-form text while a plan approval is pending and approves the plan on callback", async () => {
