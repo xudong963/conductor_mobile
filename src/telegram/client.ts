@@ -30,10 +30,15 @@ interface TelegramRequestOptions {
   timeoutMs?: number;
 }
 
+interface TelegramApiParameters {
+  retry_after?: number;
+}
+
 interface TelegramApiResponse {
   ok: boolean;
   description?: string;
   error_code?: number;
+  parameters?: TelegramApiParameters;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -78,6 +83,31 @@ function getPreferredErrorMessage(error: unknown): string | null {
   return record.cause ? getPreferredErrorMessage(record.cause) : null;
 }
 
+function parseRetryAfterSeconds(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.ceil(value);
+}
+
+function parseRetryAfterFromDescription(description: string | null): number | null {
+  if (!description) {
+    return null;
+  }
+  const match = description.match(/\bretry after\s+(\d+)\b/i);
+  if (!match) {
+    return null;
+  }
+  return parseRetryAfterSeconds(Number(match[1]));
+}
+
+function getTelegramRetryAfterSeconds(
+  parameters: TelegramApiParameters | null | undefined,
+  description: string | null,
+): number | null {
+  return parseRetryAfterSeconds(parameters?.retry_after) ?? parseRetryAfterFromDescription(description);
+}
+
 export class TelegramNetworkError extends Error {
   readonly code: string | null;
   readonly method: string;
@@ -94,15 +124,22 @@ export class TelegramNetworkError extends Error {
 export class TelegramApiError extends Error {
   readonly description: string | null;
   readonly method: string;
+  readonly retryAfterSeconds: number | null;
   readonly status: number | null;
 
-  constructor(method: string, status: number | null, description: string | null) {
+  constructor(
+    method: string,
+    status: number | null,
+    description: string | null,
+    retryAfterSeconds: number | null = null,
+  ) {
     const statusText = status === null ? "request failed" : `HTTP ${status}`;
     super(`Telegram API ${method} failed: ${description ?? statusText}`);
     this.name = "TelegramApiError";
     this.method = method;
     this.status = status;
     this.description = description;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -148,8 +185,9 @@ export const summarizeTelegramNetworkError = summarizeTelegramError;
 
 async function readTelegramApiError(
   response: Response,
-): Promise<{ description: string | null; status: number | null }> {
+): Promise<{ description: string | null; retryAfterSeconds: number | null; status: number | null }> {
   let description: string | null = null;
+  let retryAfterSeconds: number | null = null;
   let status: number | null = response.status;
 
   try {
@@ -161,19 +199,22 @@ async function readTelegramApiError(
         if (typeof data.error_code === "number") {
           status = data.error_code;
         }
+        retryAfterSeconds = getTelegramRetryAfterSeconds(data.parameters, description);
       } catch {
         description = text.trim() || null;
+        retryAfterSeconds = getTelegramRetryAfterSeconds(null, description);
       }
     }
   } catch {
     description = null;
   }
 
-  return { status, description };
+  return { status, description, retryAfterSeconds };
 }
 
 export class TelegramClient {
   private readonly baseUrl: string;
+  private retryAfterDeadlineMs = 0;
 
   constructor(token: string) {
     this.baseUrl = `https://api.telegram.org/bot${token}`;
@@ -266,35 +307,64 @@ export class TelegramClient {
     body: Record<string, unknown>,
     options?: TelegramRequestOptions,
   ): Promise<T> {
-    let response: Response;
-    const requestInit: RequestInit = {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-    };
-    if (options?.timeoutMs) {
-      requestInit.signal = AbortSignal.timeout(options.timeoutMs);
-    }
-    try {
-      response = await fetch(`${this.baseUrl}/${method}`, requestInit);
-    } catch (error) {
-      throw new TelegramNetworkError(method, error);
-    }
+    for (;;) {
+      await this.waitForRetryWindow();
 
-    if (!response.ok) {
-      const apiError = await readTelegramApiError(response);
-      throw new TelegramApiError(method, apiError.status, apiError.description);
+      let response: Response;
+      const requestInit: RequestInit = {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      };
+      if (options?.timeoutMs) {
+        requestInit.signal = AbortSignal.timeout(options.timeoutMs);
+      }
+      try {
+        response = await fetch(`${this.baseUrl}/${method}`, requestInit);
+      } catch (error) {
+        throw new TelegramNetworkError(method, error);
+      }
+
+      if (!response.ok) {
+        const apiError = await readTelegramApiError(response);
+        if (apiError.retryAfterSeconds !== null) {
+          this.deferUntilRetryWindow(apiError.retryAfterSeconds);
+          continue;
+        }
+        throw new TelegramApiError(method, apiError.status, apiError.description, apiError.retryAfterSeconds);
+      }
+      const data = (await response.json()) as TelegramApiResponse;
+      if (!data.ok) {
+        const description = typeof data.description === "string" && data.description ? data.description : null;
+        const status = typeof data.error_code === "number" ? data.error_code : response.status;
+        const retryAfterSeconds = getTelegramRetryAfterSeconds(data.parameters, description);
+        if (retryAfterSeconds !== null) {
+          this.deferUntilRetryWindow(retryAfterSeconds);
+          continue;
+        }
+        throw new TelegramApiError(method, status, description, retryAfterSeconds);
+      }
+      return data as T;
     }
-    const data = (await response.json()) as TelegramApiResponse;
-    if (!data.ok) {
-      throw new TelegramApiError(
-        method,
-        typeof data.error_code === "number" ? data.error_code : response.status,
-        typeof data.description === "string" && data.description ? data.description : null,
-      );
+  }
+
+  private deferUntilRetryWindow(retryAfterSeconds: number): void {
+    const retryAfterMs = Math.ceil(retryAfterSeconds * 1000);
+    const deadline = Date.now() + retryAfterMs;
+    if (deadline > this.retryAfterDeadlineMs) {
+      this.retryAfterDeadlineMs = deadline;
     }
-    return data as T;
+  }
+
+  private async waitForRetryWindow(): Promise<void> {
+    for (;;) {
+      const delayMs = this.retryAfterDeadlineMs - Date.now();
+      if (delayMs <= 0) {
+        return;
+      }
+      await delay(delayMs);
+    }
   }
 }
