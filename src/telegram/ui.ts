@@ -1,5 +1,10 @@
-import type { ConductorSessionRef, TelegramInlineKeyboard, WorkspaceRef } from "../types.js";
-import { formatSessionButtonLabel, formatWorkspaceLabel } from "../utils/text.js";
+import type { ConductorSessionRef, RepositoryRef, TelegramInlineKeyboard, WorkspaceRef } from "../types.js";
+import {
+  formatBranchButtonLabel,
+  formatRepositoryLabel,
+  formatSessionButtonLabel,
+  formatWorkspaceLabel,
+} from "../utils/text.js";
 
 export function homeKeyboard(): TelegramInlineKeyboard {
   return [
@@ -8,10 +13,13 @@ export function homeKeyboard(): TelegramInlineKeyboard {
       { text: "New Chat Here", callback_data: "home:new" },
     ],
     [
-      { text: "Switch Session", callback_data: "home:sessions" },
-      { text: "Switch Workspace", callback_data: "home:workspaces" },
+      { text: "Switch Repo", callback_data: "home:workspaces" },
+      { text: "Switch Branch", callback_data: "home:branches" },
     ],
-    [{ text: "Inbox", callback_data: "home:inbox" }],
+    [
+      { text: "Switch Chat", callback_data: "home:sessions" },
+      { text: "Inbox", callback_data: "home:inbox" },
+    ],
   ];
 }
 
@@ -33,11 +41,33 @@ export function workspacesKeyboard(workspaces: WorkspaceRef[]): TelegramInlineKe
   return rows;
 }
 
+export function repositoriesKeyboard(repositories: RepositoryRef[]): TelegramInlineKeyboard {
+  const rows = repositories.map((repository) => [
+    {
+      text: formatRepositoryLabel(repository),
+      callback_data: `repo:${repository.id}`,
+    },
+  ]);
+  rows.push([{ text: "Back", callback_data: "back:home" }]);
+  return rows;
+}
+
 export function sessionsKeyboard(sessions: ConductorSessionRef[]): TelegramInlineKeyboard {
   const rows = sessions.map((session, index) => [
     {
       text: formatSessionButtonLabel(session, index),
       callback_data: `session:${session.id}`,
+    },
+  ]);
+  rows.push([{ text: "Back", callback_data: "back:home" }]);
+  return rows;
+}
+
+export function branchesKeyboard(workspaces: WorkspaceRef[]): TelegramInlineKeyboard {
+  const rows = workspaces.map((workspace, index) => [
+    {
+      text: formatBranchButtonLabel(workspace, index),
+      callback_data: `branch:${workspace.id}`,
     },
   ]);
   rows.push([{ text: "Back", callback_data: "back:home" }]);

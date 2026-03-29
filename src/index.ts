@@ -7,12 +7,13 @@ import { BridgeStateStore } from "./bridge/state-store.js";
 import { config } from "./config.js";
 import { isTransientTelegramNetworkError, summarizeTelegramNetworkError, TelegramClient } from "./telegram/client.js";
 import {
+  branchesKeyboard,
   homeKeyboard,
   inboxKeyboard,
   planKeyboard,
+  repositoriesKeyboard,
   replyKeyboard,
   sessionsKeyboard,
-  workspacesKeyboard,
 } from "./telegram/ui.js";
 import type {
   CodexNotification,
@@ -20,14 +21,18 @@ import type {
   TelegramCallbackQuery,
   TelegramMessage,
   TelegramUpdate,
+  WorkspaceRef,
 } from "./types.js";
 import { logger } from "./utils/logger.js";
 import {
   extractHumanText,
+  formatBranchName,
+  formatBranchPickerText,
   formatPlan,
+  formatRepositoryLabel,
   formatSessionPickerText,
+  formatSessionTitle,
   formatStatusLine,
-  formatWorkspaceLabel,
   sanitizeSessionTitle,
   truncate,
 } from "./utils/text.js";
@@ -101,6 +106,18 @@ function extractErrorMessage(error: unknown): string {
 function normalizeCommand(input: string): string {
   const command = input.trim().split(/\s+/, 1)[0] ?? input.trim();
   return command.split("@", 1)[0] ?? command;
+}
+
+function selectedRepositoryLabel(workspace: Pick<WorkspaceRef, "repositoryName"> | null | undefined): string {
+  return workspace ? formatRepositoryLabel(workspace) : "未选择";
+}
+
+function selectedBranchLabel(workspace: Pick<WorkspaceRef, "branch" | "directoryName"> | null | undefined): string {
+  return workspace ? formatBranchName(workspace) : "未选择";
+}
+
+function selectedChatLabel(session: Pick<ConductorSessionRef, "title"> | null | undefined): string {
+  return session ? formatSessionTitle(session.title) : "未选择";
 }
 
 class TelegramConductorBridge {
@@ -256,15 +273,21 @@ class TelegramConductorBridge {
 
     const data = callback.data ?? "";
 
-    if (data === "home:workspaces") {
+    if (data === "home:workspaces" || data === "home:repos") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showWorkspaces(chatId);
+      await this.showRepositories(chatId);
       return;
     }
 
-    if (data === "home:sessions") {
+    if (data === "home:branches") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showSessions(chatId);
+      await this.showBranches(chatId);
+      return;
+    }
+
+    if (data === "home:sessions" || data === "home:chats") {
+      await this.telegram.answerCallbackQuery(callback.id);
+      await this.showChats(chatId);
       return;
     }
 
@@ -278,10 +301,15 @@ class TelegramConductorBridge {
       await this.telegram.answerCallbackQuery(callback.id);
       const session = this.resolveSelectedSession(chatId);
       if (!session) {
-        await this.showSessions(chatId, "先选一个 session。");
+        const context = this.stateStore.getChatContext(chatId);
+        if (context.activeWorkspaceId) {
+          await this.showChats(chatId, "先选一个 chat。");
+        } else {
+          await this.showRepositories(chatId, "先选一个 repo 和 branch，再选一个 chat。");
+        }
         return;
       }
-      await this.showHome(chatId, `当前继续目标：${session.title ?? session.id.slice(0, 8)}`);
+      await this.showHome(chatId, `当前继续目标：${formatSessionTitle(session.title)}`);
       return;
     }
 
@@ -289,13 +317,13 @@ class TelegramConductorBridge {
       await this.telegram.answerCallbackQuery(callback.id);
       const context = this.stateStore.getChatContext(chatId);
       if (!context.activeWorkspaceId) {
-        await this.showWorkspaces(chatId, "先选一个 workspace，再创建新 session。");
+        await this.showRepositories(chatId, "先选一个 repo 和 branch，再创建新的 chat。");
         return;
       }
       this.stateStore.setComposeMode(chatId, "new_session", {
         composeWorkspaceId: context.activeWorkspaceId,
       });
-      await this.safeSendMessage(chatId, "下一条文本会创建一个新的 Conductor session。");
+      await this.safeSendMessage(chatId, "下一条文本会在当前 branch 创建一个新的 chat。");
       return;
     }
 
@@ -323,15 +351,41 @@ class TelegramConductorBridge {
       return;
     }
 
+    if (data.startsWith("repo:")) {
+      await this.telegram.answerCallbackQuery(callback.id);
+      await this.selectRepository(chatId, data.slice("repo:".length));
+      return;
+    }
+
+    if (data.startsWith("branch:")) {
+      await this.telegram.answerCallbackQuery(callback.id);
+      await this.selectBranch(chatId, data.slice("branch:".length));
+      return;
+    }
+
     if (data.startsWith("workspace:")) {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.selectWorkspace(chatId, data.slice("workspace:".length));
+      const id = data.slice("workspace:".length);
+      if (this.registry.getWorkspaceById(id)) {
+        await this.selectBranch(chatId, id);
+        return;
+      }
+      await this.selectRepository(chatId, id);
       return;
     }
 
     if (data.startsWith("session:")) {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.selectSession(chatId, data.slice("session:".length));
+      const id = data.slice("session:".length);
+      if (this.registry.getSessionById(id)) {
+        await this.selectChat(chatId, id);
+        return;
+      }
+      if (this.registry.getWorkspaceById(id)) {
+        await this.selectBranch(chatId, id);
+        return;
+      }
+      await this.safeSendMessage(chatId, "找不到这个 chat。");
       return;
     }
 
@@ -345,11 +399,16 @@ class TelegramConductorBridge {
       case "/home":
         await this.showHome(chatId);
         return;
+      case "/repos":
       case "/workspaces":
-        await this.showWorkspaces(chatId);
+        await this.showRepositories(chatId);
         return;
+      case "/branches":
+        await this.showBranches(chatId);
+        return;
+      case "/chats":
       case "/sessions":
-        await this.showSessions(chatId);
+        await this.showChats(chatId);
         return;
       case "/status":
         await this.showStatus(chatId);
@@ -360,13 +419,13 @@ class TelegramConductorBridge {
       case "/new": {
         const context = this.stateStore.getChatContext(chatId);
         if (!context.activeWorkspaceId) {
-          await this.showWorkspaces(chatId, "先选一个 workspace，再创建新 session。");
+          await this.showRepositories(chatId, "先选一个 repo 和 branch，再创建新的 chat。");
           return;
         }
         this.stateStore.setComposeMode(chatId, "new_session", {
           composeWorkspaceId: context.activeWorkspaceId,
         });
-        await this.safeSendMessage(chatId, "下一条文本会创建新的 Conductor session。");
+        await this.safeSendMessage(chatId, "下一条文本会在当前 branch 创建新的 chat。");
         return;
       }
       case "/help":
@@ -375,6 +434,9 @@ class TelegramConductorBridge {
           [
             "可用命令：",
             "/home",
+            "/repos",
+            "/branches",
+            "/chats",
             "/workspaces",
             "/sessions",
             "/status",
@@ -382,7 +444,7 @@ class TelegramConductorBridge {
             "/new",
             "/help",
             "",
-            "普通文本默认继续当前选中的 session。",
+            "普通文本默认继续当前选中的 chat。",
           ].join("\n"),
         );
         return;
@@ -427,7 +489,11 @@ class TelegramConductorBridge {
     }
 
     if (!session) {
-      await this.showWorkspaces(chatId, "先选 workspace 和 session。");
+      if (context.activeWorkspaceId) {
+        await this.showHome(chatId, "当前 branch 没有可继续的 chat。点 New Chat Here 创建一个新的 Conductor chat。");
+        return;
+      }
+      await this.showRepositories(chatId, "先选 repo、branch 和 chat。");
       return;
     }
 
@@ -453,41 +519,54 @@ class TelegramConductorBridge {
     return this.registry.getSessionById(workspace.activeSessionId);
   }
 
-  private async selectWorkspace(chatId: number, workspaceId: string): Promise<void> {
+  private async selectRepository(chatId: number, repositoryId: string): Promise<void> {
+    const workspaces = this.registry.listWorkspacesForRepository(repositoryId, config.pageSize);
+    if (workspaces.length === 0) {
+      await this.safeSendMessage(chatId, "找不到这个 repo。");
+      return;
+    }
+
+    await this.showBranches(chatId, `已切换到 repo：${formatRepositoryLabel(workspaces[0])}`, repositoryId);
+  }
+
+  private async selectBranch(chatId: number, workspaceId: string): Promise<void> {
     const workspace = this.registry.getWorkspaceById(workspaceId);
     if (!workspace) {
-      await this.safeSendMessage(chatId, "找不到这个 workspace。");
+      await this.safeSendMessage(chatId, "找不到这个 branch。");
       return;
     }
 
     this.stateStore.setActiveWorkspace(chatId, workspace.id);
     if (workspace.activeSessionId) {
       this.stateStore.setActiveSession(chatId, workspace.activeSessionId);
+      const session = this.registry.getSessionById(workspace.activeSessionId);
+      if (session?.claudeSessionId) {
+        this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
+      }
     } else {
       this.stateStore.updateChatContext(chatId, { activeSessionId: null });
     }
+    this.stateStore.clearComposeMode(chatId);
 
-    await this.showSessions(
-      chatId,
-      `已切换到 workspace：${formatWorkspaceLabel(workspace, { includeDirectory: true })}`,
-    );
+    await this.showChats(chatId, `已切换到 branch：${formatBranchName(workspace)}`, workspace.id);
   }
 
-  private async selectSession(chatId: number, sessionId: string): Promise<void> {
+  private async selectChat(chatId: number, sessionId: string): Promise<void> {
     const session = this.registry.getSessionById(sessionId);
     if (!session) {
-      await this.safeSendMessage(chatId, "找不到这个 session。");
+      await this.safeSendMessage(chatId, "找不到这个 chat。");
       return;
     }
 
     this.stateStore.setActiveWorkspace(chatId, session.workspaceId);
     this.stateStore.setActiveSession(chatId, session.id);
     this.stateStore.clearComposeMode(chatId);
+    this.registry.updateWorkspaceActiveSession(session.workspaceId, session.id);
     if (session.claudeSessionId) {
       this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
     }
 
-    await this.showHome(chatId, `已切换到 session：${session.title ?? session.id.slice(0, 8)}`);
+    await this.showHome(chatId, `已切换到 chat：${formatSessionTitle(session.title)}`);
   }
 
   private async showHome(chatId: number, prefix?: string): Promise<void> {
@@ -502,38 +581,78 @@ class TelegramConductorBridge {
       lines.push("");
     }
     lines.push("Conductor Telegram Bridge");
-    lines.push(`Workspace: ${workspace ? formatWorkspaceLabel(workspace, { includeDirectory: true }) : "未选择"}`);
-    lines.push(`Session: ${session?.title ?? "未选择"}`);
+    lines.push(`Repo: ${selectedRepositoryLabel(workspace)}`);
+    lines.push(`Branch: ${selectedBranchLabel(workspace)}`);
+    lines.push(`Current Chat: ${selectedChatLabel(session)}`);
     lines.push(`Status: ${this.sessionStatusLabel(session, runtime)}`);
     lines.push(`Mode: ${context.composeMode}`);
     await this.safeSendMessage(chatId, lines.join("\n"), homeKeyboard());
   }
 
-  private async showWorkspaces(chatId: number, prefix?: string): Promise<void> {
-    const workspaces = this.registry.listWorkspaces(config.pageSize);
-    if (workspaces.length === 0) {
-      await this.safeSendMessage(chatId, "没有可用的 workspace。");
+  private async showRepositories(chatId: number, prefix?: string): Promise<void> {
+    const repositories = this.registry.listRepositories(config.pageSize);
+    if (repositories.length === 0) {
+      await this.safeSendMessage(chatId, "没有可用的 repo。");
       return;
     }
-    const text = [prefix, "选择一个 workspace："].filter(Boolean).join("\n\n");
-    await this.safeSendMessage(chatId, text, workspacesKeyboard(workspaces));
+    const text = [prefix, "选择一个 repo："].filter(Boolean).join("\n\n");
+    await this.safeSendMessage(chatId, text, repositoriesKeyboard(repositories));
   }
 
-  private async showSessions(chatId: number, prefix?: string): Promise<void> {
+  private async showBranches(chatId: number, prefix?: string, repositoryId?: string): Promise<void> {
     const context = this.stateStore.getChatContext(chatId);
-    if (!context.activeWorkspaceId) {
-      await this.showWorkspaces(chatId, prefix ?? "先选一个 workspace。");
+    const currentWorkspace = context.activeWorkspaceId
+      ? this.registry.getWorkspaceById(context.activeWorkspaceId)
+      : null;
+    const targetRepositoryId = repositoryId ?? currentWorkspace?.repositoryId ?? null;
+    if (!targetRepositoryId) {
+      await this.showRepositories(chatId, prefix ?? "先选一个 repo。");
       return;
     }
 
-    const sessions = this.registry.listSessions(context.activeWorkspaceId, config.pageSize);
+    const workspaces = this.registry.listWorkspacesForRepository(targetRepositoryId, config.pageSize);
+    if (workspaces.length === 0) {
+      await this.safeSendMessage(chatId, `${prefix ? `${prefix}\n\n` : ""}当前 repo 下没有 branch。`);
+      return;
+    }
+
+    const activeWorkspaceId =
+      currentWorkspace && currentWorkspace.repositoryId === targetRepositoryId ? currentWorkspace.id : null;
+    const text = formatBranchPickerText(workspaces, {
+      activeWorkspaceId,
+      heading: "选择一个 branch：",
+      prefix,
+    });
+    await this.safeSendMessage(chatId, text, branchesKeyboard(workspaces));
+  }
+
+  private async showChats(chatId: number, prefix?: string, workspaceId?: string): Promise<void> {
+    const context = this.stateStore.getChatContext(chatId);
+    const targetWorkspaceId = workspaceId ?? context.activeWorkspaceId ?? null;
+    if (!targetWorkspaceId) {
+      await this.showRepositories(chatId, prefix ?? "先选一个 repo 和 branch。");
+      return;
+    }
+
+    const workspace = this.registry.getWorkspaceById(targetWorkspaceId);
+    if (!workspace) {
+      await this.showRepositories(chatId, prefix ?? "找不到这个 branch。");
+      return;
+    }
+
+    const sessions = this.registry.listSessions(targetWorkspaceId, config.pageSize);
     if (sessions.length === 0) {
-      await this.safeSendMessage(chatId, `${prefix ? `${prefix}\n\n` : ""}当前 workspace 下没有 session。`);
+      await this.safeSendMessage(
+        chatId,
+        `${prefix ? `${prefix}\n\n` : ""}当前 branch 下没有 chat。点 New Chat Here 创建一个新的 Conductor chat。`,
+        homeKeyboard(),
+      );
       return;
     }
 
     const text = formatSessionPickerText(sessions, {
-      activeSessionId: context.activeSessionId,
+      activeSessionId: context.activeSessionId ?? workspace.activeSessionId,
+      heading: "选择一个 chat：",
       prefix,
     });
     await this.safeSendMessage(chatId, text, sessionsKeyboard(sessions));
@@ -545,7 +664,7 @@ class TelegramConductorBridge {
       await this.safeSendMessage(chatId, "Inbox 为空。");
       return;
     }
-    await this.safeSendMessage(chatId, "需要你处理的 session：", inboxKeyboard(sessions));
+    await this.safeSendMessage(chatId, "需要你处理的 chat：", inboxKeyboard(sessions));
   }
 
   private async showStatus(chatId: number): Promise<void> {
@@ -558,8 +677,9 @@ class TelegramConductorBridge {
       : 0;
 
     const lines = [
-      `Workspace: ${workspace ? formatWorkspaceLabel(workspace, { includeDirectory: true }) : "未选择"}`,
-      `Session: ${session?.title ?? "未选择"}`,
+      `Repo: ${selectedRepositoryLabel(workspace)}`,
+      `Branch: ${selectedBranchLabel(workspace)}`,
+      `Current Chat: ${selectedChatLabel(session)}`,
       `Status: ${this.sessionStatusLabel(session, runtime)}`,
       `Compose: ${context.composeMode}`,
       `Queued: ${queueCount}`,
@@ -573,12 +693,12 @@ class TelegramConductorBridge {
   private async showQueue(chatId: number): Promise<void> {
     const session = this.resolveSelectedSession(chatId);
     if (!session) {
-      await this.safeSendMessage(chatId, "先选一个 session。");
+      await this.safeSendMessage(chatId, "先选一个 chat。");
       return;
     }
     const items = this.stateStore.listQueueForSession(session.id, 10);
     if (items.length === 0) {
-      await this.safeSendMessage(chatId, "当前 session 没有队列。");
+      await this.safeSendMessage(chatId, "当前 chat 没有队列。");
       return;
     }
 
@@ -618,13 +738,13 @@ class TelegramConductorBridge {
       return false;
     }
     if (!session.claudeSessionId) {
-      await this.safeSendMessage(chatId, "当前 session 没有底层 thread id，无法继续。");
+      await this.safeSendMessage(chatId, "当前 chat 没有底层 thread id，无法继续。");
       return false;
     }
 
     if (!fromQueue && this.shouldQueueSession(session)) {
       this.stateStore.enqueuePrompt(session.id, session.claudeSessionId, "normal", text);
-      await this.safeSendMessage(chatId, "当前 session 正在忙，已加入队列。");
+      await this.safeSendMessage(chatId, "当前 chat 正在忙，已加入队列。");
       return true;
     }
 
@@ -657,9 +777,9 @@ class TelegramConductorBridge {
         if (context.activeSessionId === session.id) {
           this.stateStore.setActiveSession(chatId, null);
         }
-        await this.showSessions(
+        await this.showChats(
           chatId,
-          "当前 session 的底层 thread 已失效，无法继续。请切换到别的 session，或点 New Chat Here 新建一个。",
+          "当前 chat 的底层 thread 已失效，无法继续。请切换到别的 chat，或点 New Chat Here 新建一个。",
         );
         return false;
       }
@@ -698,7 +818,7 @@ class TelegramConductorBridge {
     const context = this.stateStore.getChatContext(chatId);
     const workspaceId = context.composeWorkspaceId ?? context.activeWorkspaceId;
     if (!workspaceId) {
-      await this.showWorkspaces(chatId, "先选一个 workspace。");
+      await this.showRepositories(chatId, "先选一个 repo 和 branch。");
       return;
     }
 
@@ -724,14 +844,14 @@ class TelegramConductorBridge {
       this.stateStore.clearComposeMode(chatId);
       this.sessionIdByThreadId.set(threadId, session.id);
 
-      await this.safeSendMessage(chatId, `已创建新 session：${title}`);
+      await this.safeSendMessage(chatId, `已创建新 chat：${title}`);
       await this.submitPrompt(chatId, session, text, false);
     } catch (error) {
       if (threadId) {
         await this.codex.archiveThread(threadId).catch(() => undefined);
       }
       logger.error("failed to create new session", error);
-      await this.safeSendMessage(chatId, "创建新 session 失败。");
+      await this.safeSendMessage(chatId, "创建新 chat 失败。");
     }
   }
 
@@ -776,7 +896,7 @@ class TelegramConductorBridge {
   private async approvePlan(chatId: number): Promise<void> {
     const session = this.resolveSelectedSession(chatId);
     if (!session) {
-      await this.safeSendMessage(chatId, "先选一个 session。");
+      await this.safeSendMessage(chatId, "先选一个 chat。");
       return;
     }
 
@@ -1273,8 +1393,8 @@ class TelegramConductorBridge {
 
     const text = truncate(
       `${formatStatusLine(
-        workspace ? formatWorkspaceLabel(workspace, { includeDirectory: true }) : null,
-        session.title ?? null,
+        workspace ? formatRepositoryLabel(workspace) : null,
+        workspace ? `${formatBranchName(workspace)} / ${formatSessionTitle(session.title)}` : null,
         this.sessionStatusLabel(session, runtime),
       )}\n\n${body}`,
       3800,
