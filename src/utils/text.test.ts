@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { truncate, sanitizeSessionTitle, extractHumanText, formatStatusLine, formatPlan } from "./text.js";
+import {
+  extractHumanText,
+  formatPlan,
+  formatSessionButtonLabel,
+  formatSessionPickerText,
+  formatSessionStatus,
+  formatStatusLine,
+  sanitizeSessionTitle,
+  truncate,
+} from "./text.js";
 
 describe("truncate", () => {
   it("returns short strings unchanged", () => {
@@ -10,6 +19,47 @@ describe("truncate", () => {
     const result = truncate("abcdef", 4);
     expect(result).toBe("abc…");
     expect(result.length).toBe(4);
+  });
+});
+
+describe("formatSessionStatus", () => {
+  it("humanizes underscored statuses", () => {
+    expect(formatSessionStatus("needs_user_input")).toBe("needs user input");
+  });
+});
+
+describe("formatSessionButtonLabel", () => {
+  it("numbers and truncates button labels", () => {
+    expect(formatSessionButtonLabel({ title: "A very long session title that keeps going" }, 1, 18)).toBe(
+      "2. A very long se…",
+    );
+  });
+
+  it("falls back to Untitled", () => {
+    expect(formatSessionButtonLabel({ title: null }, 0, 20)).toBe("1. Untitled");
+  });
+});
+
+describe("formatSessionPickerText", () => {
+  it("renders session previews with current marker", () => {
+    const result = formatSessionPickerText(
+      [
+        { id: "session-12345678", title: "Continue session chat", status: "idle" },
+        { id: "session-abcdef12", title: null, status: "needs_user_input" },
+      ],
+      {
+        activeSessionId: "session-12345678",
+        prefix: "已切换到 workspace：demo",
+      },
+    );
+
+    expect(result).toContain("已切换到 workspace：demo");
+    expect(result).toContain("1. Continue session chat");
+    expect(result).toContain("状态: idle · 当前");
+    expect(result).toContain("2. Untitled");
+    expect(result).toContain("状态: needs user input");
+    expect(result).toContain("ID: session-");
+    expect(result).toContain("点下方按钮选择。");
   });
 });
 

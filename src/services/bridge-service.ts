@@ -26,6 +26,7 @@ import type {
 import {
   extractHumanText,
   formatPlan,
+  formatSessionPickerText,
   formatStatusLine,
   formatWorkspaceLabel,
   sanitizeSessionTitle,
@@ -429,9 +430,16 @@ export class TelegramBridgeService {
       await this.telegram.sendMessage(chatId, "当前 workspace 没有 session。");
       return;
     }
-    await this.telegram.sendMessage(chatId, "选择 session", {
-      reply_markup: { inline_keyboard: sessionsKeyboard(sessions) },
-    });
+    await this.telegram.sendMessage(
+      chatId,
+      formatSessionPickerText(sessions, {
+        activeSessionId: ctx.activeSessionId,
+        heading: "选择 session",
+      }),
+      {
+        reply_markup: { inline_keyboard: sessionsKeyboard(sessions) },
+      },
+    );
   }
 
   private async showInbox(chatId: number): Promise<void> {
