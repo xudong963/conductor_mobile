@@ -886,7 +886,17 @@ export class TelegramConductorBridge {
       return null;
     }
 
-    return this.stateStore.bindSessionTopic(session.id, legacyTopic);
+    try {
+      return this.stateStore.bindSessionTopic(session.id, legacyTopic);
+    } catch (error) {
+      logger.warn("failed to bootstrap legacy session topic binding", {
+        chatId: location.chatId,
+        messageThreadId: legacyTopic.messageThreadId,
+        sessionId: session.id,
+        error: extractErrorMessage(error),
+      });
+      return legacyTopic.messageThreadId !== null ? legacyTopic : null;
+    }
   }
 
   private async ensureSessionTopicLocation(
@@ -904,7 +914,16 @@ export class TelegramConductorBridge {
       return null;
     }
 
-    this.stateStore.bindSessionTopic(session.id, topicLocation);
+    try {
+      this.stateStore.bindSessionTopic(session.id, topicLocation);
+    } catch (error) {
+      logger.warn("failed to persist session topic binding", {
+        chatId: location.chatId,
+        messageThreadId: topicLocation.messageThreadId,
+        sessionId: session.id,
+        error: extractErrorMessage(error),
+      });
+    }
     this.activateSessionLocation(topicLocation, session);
     return topicLocation;
   }
@@ -2226,9 +2245,21 @@ export class TelegramConductorBridge {
   ): Promise<TelegramConversationTarget | null> {
     try {
       const topic = await this.telegram.createForumTopic(location.chatId, title.slice(0, 128));
+      const messageThreadId =
+        typeof topic?.message_thread_id === "number" && Number.isInteger(topic.message_thread_id)
+          ? topic.message_thread_id
+          : null;
+      if (!messageThreadId || messageThreadId <= 0) {
+        logger.warn("telegram createForumTopic returned an invalid message_thread_id", {
+          chatId: location.chatId,
+          title,
+          topic,
+        });
+        return null;
+      }
       return {
         chatId: location.chatId,
-        messageThreadId: topic.message_thread_id,
+        messageThreadId,
       };
     } catch (error) {
       logger.warn("failed to create telegram forum topic; continuing in the current conversation", {

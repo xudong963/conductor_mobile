@@ -31,11 +31,15 @@ function createBridge() {
     getRepositoryById: vi.fn(),
     findSessionByThreadId: vi.fn(),
     getSessionById: vi.fn(),
+    updateWorkspaceActiveSession: vi.fn(),
     getWorkspaceById: vi.fn(),
   };
   const stateStore = {
     clearConversationComposeMode: vi.fn(),
+    bindSessionTopic: vi.fn(),
+    findFollowingTopic: vi.fn(),
     getConversationContext: vi.fn(),
+    getSessionTopic: vi.fn(),
     setTelegramCursor: vi.fn(),
     getSessionById: vi.fn(),
     listQueueForSession: vi.fn().mockReturnValue([]),
@@ -45,9 +49,11 @@ function createBridge() {
     retryPrompt: vi.fn(),
     markPromptFinished: vi.fn(),
     setConversationComposeMode: vi.fn(),
+    updateConversationContext: vi.fn(),
   };
   const telegram = {
     answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
+    createForumTopic: vi.fn(),
     editMessageText: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(null),
   };
@@ -341,6 +347,87 @@ describe("TelegramConductorBridge", () => {
 
     expect(showStatus).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
     expect(submitPrompt).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a legacy following topic when bootstrapping the binding fails", () => {
+    const { bridge, stateStore } = createBridge();
+
+    stateStore.getSessionTopic.mockReturnValue(null);
+    stateStore.findFollowingTopic.mockReturnValue({ chatId: 99, messageThreadId: 77 });
+    stateStore.bindSessionTopic.mockImplementation(() => {
+      throw new Error("database is locked");
+    });
+
+    const topicLocation = (
+      bridge as unknown as {
+        getKnownSessionTopicLocation: (
+          location: { chatId: number; messageThreadId: number | null },
+          session: { id: string },
+        ) => { chatId: number; messageThreadId: number | null } | null;
+      }
+    ).getKnownSessionTopicLocation({ chatId: 99, messageThreadId: null }, { id: "session-1" });
+
+    expect(topicLocation).toEqual({ chatId: 99, messageThreadId: 77 });
+  });
+
+  it("keeps working when a new topic is created but binding persistence fails", async () => {
+    const { bridge, registry, stateStore, telegram } = createBridge();
+
+    stateStore.getSessionTopic.mockReturnValue(null);
+    stateStore.findFollowingTopic.mockReturnValue(null);
+    stateStore.bindSessionTopic.mockImplementation(() => {
+      throw new Error("write failed");
+    });
+    stateStore.updateConversationContext.mockReturnValue({});
+    telegram.createForumTopic.mockResolvedValue({ message_thread_id: 321 });
+
+    const session: { id: string; workspaceId: string; claudeSessionId: string | null } = {
+      id: "session-1",
+      workspaceId: "workspace-1",
+      claudeSessionId: "thread-1",
+    };
+
+    const topicLocation = await (
+      bridge as unknown as {
+        ensureSessionTopicLocation: (
+          location: { chatId: number; messageThreadId: number | null },
+          session: { id: string; workspaceId: string; claudeSessionId: string | null },
+        ) => Promise<{ chatId: number; messageThreadId: number | null } | null>;
+      }
+    ).ensureSessionTopicLocation({ chatId: 99, messageThreadId: null }, session);
+
+    expect(topicLocation).toEqual({ chatId: 99, messageThreadId: 321 });
+    expect(stateStore.updateConversationContext).toHaveBeenCalledWith(
+      { chatId: 99, messageThreadId: 321 },
+      expect.objectContaining({
+        activeWorkspaceId: "workspace-1",
+        activeSessionId: "session-1",
+      }),
+    );
+    expect(registry.updateWorkspaceActiveSession).toHaveBeenCalledWith("workspace-1", "session-1");
+  });
+
+  it("ignores malformed createForumTopic responses instead of throwing", async () => {
+    const { bridge, stateStore, telegram } = createBridge();
+
+    stateStore.getSessionTopic.mockReturnValue(null);
+    stateStore.findFollowingTopic.mockReturnValue(null);
+    telegram.createForumTopic.mockResolvedValue({});
+
+    const topicLocation = await (
+      bridge as unknown as {
+        ensureSessionTopicLocation: (
+          location: { chatId: number; messageThreadId: number | null },
+          session: { id: string; workspaceId: string; claudeSessionId: string | null },
+        ) => Promise<{ chatId: number; messageThreadId: number | null } | null>;
+      }
+    ).ensureSessionTopicLocation(
+      { chatId: 99, messageThreadId: null },
+      { id: "session-1", workspaceId: "workspace-1", claudeSessionId: "thread-1" },
+    );
+
+    expect(topicLocation).toBeNull();
+    expect(stateStore.bindSessionTopic).not.toHaveBeenCalled();
   });
 
   it("skips redundant context viewer edits when the rendered payload is unchanged", async () => {
