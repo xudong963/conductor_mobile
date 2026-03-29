@@ -777,7 +777,7 @@ class TelegramConductorBridge {
     const rawLimit = Math.min(limit * 8, 160);
     const entries = this.registry
       .listSessionMessages(session.id, rawLimit)
-      .map((message) => formatSessionContextEntry(message))
+      .map((message) => formatSessionContextEntry(message, "full"))
       .filter((message): message is string => Boolean(message))
       .slice(0, limit)
       .reverse();
@@ -1821,7 +1821,7 @@ class TelegramConductorBridge {
     const rawLimit = Math.min(viewer.limit * 8, 160);
     const entries = this.registry
       .listSessionMessages(session.id, rawLimit)
-      .map((message) => formatSessionContextEntry(message))
+      .map((message) => formatSessionContextEntry(message, "full"))
       .filter((message): message is string => Boolean(message))
       .slice(0, viewer.limit)
       .reverse();
