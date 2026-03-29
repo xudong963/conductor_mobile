@@ -4,7 +4,7 @@ import { CodexAppServerAdapter } from "../adapters/codex-app-server.js";
 import { ConductorMirrorWriter } from "../adapters/conductor-mirror.js";
 import { ConductorRegistryAdapter } from "../adapters/conductor-registry.js";
 import { BridgeStateStore } from "../bridge/state-store.js";
-import { isTransientTelegramNetworkError, summarizeTelegramNetworkError, TelegramClient } from "../telegram/client.js";
+import { isTransientTelegramError, summarizeTelegramError, TelegramClient } from "../telegram/client.js";
 import {
   homeKeyboard,
   inboxKeyboard,
@@ -104,8 +104,8 @@ export class TelegramBridgeService {
           this.stateStore.setTelegramCursor(update.update_id);
         }
       } catch (error) {
-        if (isTransientTelegramNetworkError(error)) {
-          logger.warn("telegram polling interrupted; retrying", summarizeTelegramNetworkError(error));
+        if (isTransientTelegramError(error)) {
+          logger.warn("telegram polling interrupted; retrying", summarizeTelegramError(error));
         } else {
           logger.error("poll loop failed", error);
         }
