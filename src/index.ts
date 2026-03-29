@@ -1952,8 +1952,7 @@ class TelegramConductorBridge {
       }
 
       if (existing?.messageId && existing.sessionId === runtime.sessionId && existing.turnId === runtime.turnId) {
-        try {
-          await this.telegram.editMessageText(location.chatId, existing.messageId, nextText, keyboard);
+        const persistExistingMessage = () => {
           this.sessionStreams.set(key, {
             keyboardFingerprint,
             lastSentAt: now,
@@ -1962,9 +1961,60 @@ class TelegramConductorBridge {
             sessionId: runtime.sessionId,
             turnId: runtime.turnId,
           });
+        };
+
+        try {
+          await this.telegram.editMessageText(location.chatId, existing.messageId, nextText, keyboard);
+          persistExistingMessage();
           return;
         } catch (error) {
-          logger.warn("failed to edit session stream, sending new message", error);
+          const details = summarizeTelegramError(error);
+          if (details.message.toLowerCase().includes("message is not modified")) {
+            persistExistingMessage();
+            return;
+          }
+
+          logger.warn("failed to edit session stream", {
+            chatId: location.chatId,
+            messageId: existing.messageId,
+            messageThreadId: location.messageThreadId,
+            sessionId: runtime.sessionId,
+            turnId: runtime.turnId,
+            error: details,
+          });
+
+          if (runtime.status === "active" || isTransientTelegramError(error)) {
+            return;
+          }
+
+          await sleep(250);
+          try {
+            await this.telegram.editMessageText(location.chatId, existing.messageId, nextText, keyboard);
+            persistExistingMessage();
+            return;
+          } catch (retryError) {
+            logger.warn("failed to retry session stream edit", {
+              chatId: location.chatId,
+              messageId: existing.messageId,
+              messageThreadId: location.messageThreadId,
+              sessionId: runtime.sessionId,
+              turnId: runtime.turnId,
+              error: summarizeTelegramError(retryError),
+            });
+          }
+
+          try {
+            await this.telegram.deleteMessage(location.chatId, existing.messageId);
+          } catch (deleteError) {
+            logger.warn("failed to delete stale session stream", {
+              chatId: location.chatId,
+              messageId: existing.messageId,
+              messageThreadId: location.messageThreadId,
+              sessionId: runtime.sessionId,
+              turnId: runtime.turnId,
+              error: summarizeTelegramError(deleteError),
+            });
+          }
         }
       }
 
