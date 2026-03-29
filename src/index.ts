@@ -22,7 +22,14 @@ import type {
   TelegramUpdate,
 } from "./types.js";
 import { logger } from "./utils/logger.js";
-import { extractHumanText, formatPlan, formatStatusLine, sanitizeSessionTitle, truncate } from "./utils/text.js";
+import {
+  extractHumanText,
+  formatPlan,
+  formatStatusLine,
+  formatWorkspaceLabel,
+  sanitizeSessionTitle,
+  truncate,
+} from "./utils/text.js";
 
 interface LiveMessageState {
   lastText: string;
@@ -426,7 +433,7 @@ class TelegramConductorBridge {
       this.stateStore.updateChatContext(chatId, { activeSessionId: null });
     }
 
-    await this.showSessions(chatId, `已切换到 workspace：${workspace.directoryName}`);
+    await this.showSessions(chatId, `已切换到 workspace：${formatWorkspaceLabel(workspace, { includeDirectory: true })}`);
   }
 
   private async selectSession(chatId: number, sessionId: string): Promise<void> {
@@ -458,7 +465,7 @@ class TelegramConductorBridge {
       lines.push("");
     }
     lines.push("Conductor Telegram Bridge");
-    lines.push(`Workspace: ${workspace?.directoryName ?? "未选择"}`);
+    lines.push(`Workspace: ${workspace ? formatWorkspaceLabel(workspace, { includeDirectory: true }) : "未选择"}`);
     lines.push(`Session: ${session?.title ?? "未选择"}`);
     lines.push(`Status: ${this.sessionStatusLabel(session, runtime)}`);
     lines.push(`Mode: ${context.composeMode}`);
@@ -511,7 +518,7 @@ class TelegramConductorBridge {
       : 0;
 
     const lines = [
-      `Workspace: ${workspace?.directoryName ?? "未选择"}`,
+      `Workspace: ${workspace ? formatWorkspaceLabel(workspace, { includeDirectory: true }) : "未选择"}`,
       `Session: ${session?.title ?? "未选择"}`,
       `Status: ${this.sessionStatusLabel(session, runtime)}`,
       `Compose: ${context.composeMode}`,
@@ -1206,7 +1213,11 @@ class TelegramConductorBridge {
           : "处理中…");
 
     const text = truncate(
-      `${formatStatusLine(workspace?.directoryName ?? null, session.title ?? null, this.sessionStatusLabel(session, runtime))}\n\n${body}`,
+      `${formatStatusLine(
+        workspace ? formatWorkspaceLabel(workspace, { includeDirectory: true }) : null,
+        session.title ?? null,
+        this.sessionStatusLabel(session, runtime),
+      )}\n\n${body}`,
       3800,
     );
     const markup =
