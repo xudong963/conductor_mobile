@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { isTransientTelegramError, summarizeTelegramError, TelegramApiError, TelegramClient } from "./client.js";
+import {
+  isTelegramMessageNotModifiedError,
+  isTransientTelegramError,
+  summarizeTelegramError,
+  TelegramApiError,
+  TelegramClient,
+} from "./client.js";
 
 function telegramErrorResponse(status: number, body: Record<string, unknown>): Response {
   return new Response(JSON.stringify(body), {
@@ -61,6 +67,15 @@ describe("TelegramClient", () => {
   it("does not mark non-poll Telegram API errors as retryable", () => {
     expect(isTransientTelegramError(new TelegramApiError("sendMessage", 409, "Conflict"))).toBe(false);
     expect(isTransientTelegramError(new TelegramApiError("getUpdates", 401, "Unauthorized"))).toBe(false);
+  });
+
+  it("identifies no-op editMessageText errors", () => {
+    expect(
+      isTelegramMessageNotModifiedError(
+        new TelegramApiError("editMessageText", 400, "Bad Request: message is not modified"),
+      ),
+    ).toBe(true);
+    expect(isTelegramMessageNotModifiedError(new TelegramApiError("sendMessage", 400, "Bad Request"))).toBe(false);
   });
 
   it("retries sendMessage after Telegram rate limits", async () => {

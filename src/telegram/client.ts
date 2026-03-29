@@ -164,6 +164,17 @@ export function isTransientTelegramError(error: unknown): boolean {
   return isTransientTelegramNetworkError(error);
 }
 
+export function isTelegramMessageNotModifiedError(error: unknown): boolean {
+  if (error instanceof TelegramApiError) {
+    return (
+      error.method === "editMessageText" &&
+      (error.description?.toLowerCase().includes("message is not modified") ?? false)
+    );
+  }
+
+  return getPreferredErrorMessage(error)?.toLowerCase().includes("message is not modified") ?? false;
+}
+
 export function summarizeTelegramError(error: unknown): { code: string | null; message: string } {
   if (error instanceof TelegramApiError) {
     const code = error.status === null ? null : String(error.status);

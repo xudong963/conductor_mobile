@@ -6,7 +6,12 @@ import { CodexAppServerAdapter } from "./adapters/codex-app-server.js";
 import { ConductorRegistryAdapter } from "./adapters/conductor-registry.js";
 import { BridgeStateStore } from "./bridge/state-store.js";
 import { config } from "./config.js";
-import { isTransientTelegramError, summarizeTelegramError, TelegramClient } from "./telegram/client.js";
+import {
+  isTelegramMessageNotModifiedError,
+  isTransientTelegramError,
+  summarizeTelegramError,
+  TelegramClient,
+} from "./telegram/client.js";
 import {
   branchesKeyboard,
   homeKeyboard,
@@ -2454,11 +2459,11 @@ export class TelegramConductorBridge {
           persistExistingMessage();
           return;
         } catch (error) {
-          const details = summarizeTelegramError(error);
-          if (details.message.toLowerCase().includes("message is not modified")) {
+          if (isTelegramMessageNotModifiedError(error)) {
             persistExistingMessage();
             return;
           }
+          const details = summarizeTelegramError(error);
 
           logger.warn("failed to edit session stream", {
             chatId: location.chatId,
@@ -2597,6 +2602,15 @@ export class TelegramConductorBridge {
           });
           return;
         } catch (error) {
+          if (isTelegramMessageNotModifiedError(error)) {
+            this.sessionPanels.set(key, {
+              keyboardFingerprint,
+              lastText: text,
+              messageId: existing.messageId,
+              sessionId,
+            });
+            return;
+          }
           logger.warn("failed to edit session panel, sending new message", error);
         }
       }
@@ -2726,6 +2740,11 @@ export class TelegramConductorBridge {
         viewer.keyboardFingerprint = keyboardFingerprint;
         return;
       } catch (error) {
+        if (isTelegramMessageNotModifiedError(error)) {
+          viewer.lastText = text;
+          viewer.keyboardFingerprint = keyboardFingerprint;
+          return;
+        }
         logger.warn("failed to edit context viewer, sending new message", error);
         viewer.messageId = null;
       }
