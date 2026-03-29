@@ -1,17 +1,17 @@
 # Telegram Conductor Bridge
 
-Control the local Conductor instance from a Telegram private chat on your phone. The current version supports:
+Control the local Conductor instance from Telegram. The current version supports:
 
 - Browsing repos
 - Browsing and switching branches with workspace descriptions
 - Browsing and switching chats
 - Continuing existing Codex sessions
 - Creating a new Conductor chat on the current branch
+- Automatically creating a Telegram topic for a new Conductor chat when the current conversation supports topics
 - Basic queueing
 - Streamed text updates on a reusable single-message status panel
 - A single-message paginated context viewer
 - Basic `requestUserInput` and plan feedback flows
-- Telegram slash command syncing
 - Telegram slash command syncing
 
 ## Prerequisites
@@ -42,7 +42,7 @@ cp .env.example .env
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_ALLOWED_CHAT_IDS`
 
-Set `TELEGRAM_ALLOWED_CHAT_IDS` to your own Telegram chat ID. Separate multiple IDs with commas.
+Set `TELEGRAM_ALLOWED_CHAT_IDS` to the Telegram chat IDs that may use the bridge. Separate multiple IDs with commas.
 
 `BRIDGE_DB_PATH` defaults to `.context/bridge.db`. The current version creates this directory on startup, so `.context/` does not need to exist in advance.
 
@@ -74,7 +74,7 @@ On startup the bridge calls Telegram `setMyCommands`, so these slash commands al
 
 ## Basic Flow
 
-1. Open a private chat with the bot in Telegram and send `/start`
+1. Open a private chat with the bot in Telegram, or a forum-enabled supergroup where the bot is present, and send `/start`
 2. Tap `Switch Repo`
 3. Select a repo
 4. Tap `Switch Branch`
@@ -89,16 +89,18 @@ Create a new chat:
 1. Select a repo and branch first
 2. Tap `New Chat Here` or send `/new`
 3. Your next message will create a new Conductor chat and switch to it automatically
+4. If the current Telegram conversation supports topics, the bridge also creates a dedicated topic for that new chat and sends follow-up updates there
 
 ## Output Model
 
 - `/status` creates or refreshes a reusable status panel; subsequent runtime output edits that same message instead of appending a new one.
 - `/context [N]` opens a separate context preview card; paging and refresh actions only update that single message.
+- In topic-enabled chats, both panels are scoped to the current topic instead of the whole Telegram chat.
 - Both the status panel and the context preview can be closed to keep the Telegram chat tidy.
 
 ## Notes
 
-- The current version supports a single user in a single private chat
+- The current version supports a single user across the allowed Telegram chats
 - The current version only supports Codex sessions
 - The process will not start if `TELEGRAM_BOT_TOKEN` is not set
 - If the token is invalid, the bridge starts but Telegram long polling will keep returning `401`

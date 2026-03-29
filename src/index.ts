@@ -20,6 +20,7 @@ import type {
   ConductorSessionRef,
   TelegramBotCommand,
   TelegramCallbackQuery,
+  TelegramConversationTarget,
   TelegramInlineKeyboard,
   TelegramMessage,
   TelegramUpdate,
@@ -57,9 +58,9 @@ interface PendingInputRequest {
 }
 
 interface ContextViewerState {
-  chatId: number;
   entryCount: number;
   limit: number;
+  location: TelegramConversationTarget;
   messageId: number | null;
   pageIndex: number;
   pages: string[];
@@ -124,6 +125,19 @@ function normalizeCommand(input: string): string {
   return command.split("@", 1)[0] ?? command;
 }
 
+function toConversationTarget(
+  message: Pick<TelegramMessage, "chat" | "message_thread_id">,
+): TelegramConversationTarget {
+  return {
+    chatId: message.chat.id,
+    messageThreadId: message.message_thread_id ?? null,
+  };
+}
+
+function conversationKey(target: TelegramConversationTarget): string {
+  return `${target.chatId}:${target.messageThreadId ?? 0}`;
+}
+
 function selectedRepositoryLabel(workspace: Pick<WorkspaceRef, "repositoryName"> | null | undefined): string {
   return workspace ? formatRepositoryLabel(workspace) : "Not selected";
 }
@@ -167,7 +181,7 @@ function buildHelpText(): string {
     "/help  Show help",
     "",
     "You can also tap Help on the home screen.",
-    "Plain text continues the currently selected chat.",
+    "Plain text continues the currently selected chat in this Telegram chat or topic.",
   ].join("\n");
 }
 
@@ -184,8 +198,8 @@ class TelegramConductorBridge {
   private readonly runtimes = new Map<string, RuntimeState>();
   private readonly pendingInputRequests = new Map<string, PendingInputRequest>();
   private readonly sessionIdByThreadId = new Map<string, string>();
-  private readonly contextViewers = new Map<number, ContextViewerState>();
-  private readonly sessionPanels = new Map<number, SessionPanelState>();
+  private readonly contextViewers = new Map<string, ContextViewerState>();
+  private readonly sessionPanels = new Map<string, SessionPanelState>();
   private queueTimer: NodeJS.Timeout | null = null;
   private stopped = false;
 
@@ -262,11 +276,12 @@ class TelegramConductorBridge {
             updateId: update.update_id,
             error,
           });
-          const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id ?? null;
-          if (chatId) {
-            await this.safeSendMessage(chatId, "Failed to process that message. Please try again.").catch(
-              () => undefined,
-            );
+          const failedMessage = update.message ?? update.callback_query?.message;
+          if (failedMessage) {
+            await this.safeSendMessage(
+              toConversationTarget(failedMessage),
+              "Failed to process that message. Please try again.",
+            ).catch(() => undefined);
           }
         } finally {
           this.stateStore.setTelegramCursor(update.update_id);
@@ -292,12 +307,13 @@ class TelegramConductorBridge {
   }
 
   private async handleMessage(message: TelegramMessage): Promise<void> {
-    if (!this.isAuthorized(message.chat.id)) {
-      await this.safeSendMessage(message.chat.id, "Unauthorized.");
+    const location = toConversationTarget(message);
+    if (!this.isAuthorized(location.chatId)) {
+      await this.safeSendMessage(location, "Unauthorized.");
       return;
     }
-    if (message.chat.type !== "private") {
-      await this.safeSendMessage(message.chat.id, "Only Telegram private chats are supported.");
+    if (message.chat.type !== "private" && message.chat.type !== "supergroup") {
+      await this.safeSendMessage(location, "Only Telegram private chats and supergroups are supported.");
       return;
     }
     if (!message.text) {
@@ -310,19 +326,20 @@ class TelegramConductorBridge {
     }
 
     if (text.startsWith("/")) {
-      await this.handleCommand(message.chat.id, text);
+      await this.handleCommand(location, text);
       return;
     }
 
-    await this.handlePlainText(message.chat.id, text);
+    await this.handlePlainText(location, text);
   }
 
   private async handleCallback(callback: TelegramCallbackQuery): Promise<void> {
-    const chatId = callback.message?.chat.id;
-    if (!chatId) {
+    const message = callback.message;
+    if (!message) {
       return;
     }
-    if (!this.isAuthorized(chatId)) {
+    const location = toConversationTarget(message);
+    if (!this.isAuthorized(location.chatId)) {
       await this.telegram.answerCallbackQuery(callback.id, "Unauthorized");
       return;
     }
@@ -330,108 +347,108 @@ class TelegramConductorBridge {
     const data = callback.data ?? "";
 
     if (data.startsWith("context:")) {
-      await this.handleContextViewerCallback(callback, chatId, data);
+      await this.handleContextViewerCallback(callback, location, data);
       return;
     }
 
     if (data.startsWith("panel:")) {
-      await this.handleSessionPanelCallback(callback, chatId, data);
+      await this.handleSessionPanelCallback(callback, location, data);
       return;
     }
 
     if (data === "home:help") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.safeSendMessage(chatId, buildHelpText());
+      await this.safeSendMessage(location, buildHelpText());
       return;
     }
 
     if (data === "home:workspaces" || data === "home:repos") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showRepositories(chatId);
+      await this.showRepositories(location);
       return;
     }
 
     if (data === "home:branches") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showBranches(chatId);
+      await this.showBranches(location);
       return;
     }
 
     if (data === "home:sessions" || data === "home:chats") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showChats(chatId);
+      await this.showChats(location);
       return;
     }
 
     if (data === "home:inbox") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showInbox(chatId);
+      await this.showInbox(location);
       return;
     }
 
     if (data === "home:continue") {
       await this.telegram.answerCallbackQuery(callback.id);
-      const session = this.resolveSelectedSession(chatId);
+      const session = this.resolveSelectedSession(location);
       if (!session) {
-        const context = this.stateStore.getChatContext(chatId);
+        const context = this.stateStore.getConversationContext(location);
         if (context.activeWorkspaceId) {
-          await this.showChats(chatId, "Select a chat first.");
+          await this.showChats(location, "Select a chat first.");
         } else {
-          await this.showRepositories(chatId, "Select a repo and branch before selecting a chat.");
+          await this.showRepositories(location, "Select a repo and branch before selecting a chat.");
         }
         return;
       }
-      await this.showHome(chatId, `Continuing: ${formatSessionTitle(session.title)}`);
+      await this.showHome(location, `Continuing: ${formatSessionTitle(session.title)}`);
       return;
     }
 
     if (data === "home:new") {
       await this.telegram.answerCallbackQuery(callback.id);
-      const context = this.stateStore.getChatContext(chatId);
+      const context = this.stateStore.getConversationContext(location);
       if (!context.activeWorkspaceId) {
-        await this.showRepositories(chatId, "Select a repo and branch before creating a new chat.");
+        await this.showRepositories(location, "Select a repo and branch before creating a new chat.");
         return;
       }
-      this.stateStore.setComposeMode(chatId, "new_session", {
+      this.stateStore.setConversationComposeMode(location, "new_session", {
         composeWorkspaceId: context.activeWorkspaceId,
       });
-      await this.safeSendMessage(chatId, "Your next message will create a new chat on the current branch.");
+      await this.safeSendMessage(location, "Your next message will create a new chat on the current branch.");
       return;
     }
 
     if (data === "back:home") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showHome(chatId);
+      await this.showHome(location);
       return;
     }
 
     if (data === "plan:approve") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.approvePlan(chatId);
+      await this.approvePlan(location);
       return;
     }
 
     if (data === "plan:revise") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.preparePlanRevision(chatId);
+      await this.preparePlanRevision(location);
       return;
     }
 
     if (data === "reply:now") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.prepareReply(chatId);
+      await this.prepareReply(location);
       return;
     }
 
     if (data.startsWith("repo:")) {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.selectRepository(chatId, data.slice("repo:".length));
+      await this.selectRepository(location, data.slice("repo:".length));
       return;
     }
 
     if (data.startsWith("branch:")) {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.selectBranch(chatId, data.slice("branch:".length));
+      await this.selectBranch(location, data.slice("branch:".length));
       return;
     }
 
@@ -439,10 +456,10 @@ class TelegramConductorBridge {
       await this.telegram.answerCallbackQuery(callback.id);
       const id = data.slice("workspace:".length);
       if (this.registry.getWorkspaceById(id)) {
-        await this.selectBranch(chatId, id);
+        await this.selectBranch(location, id);
         return;
       }
-      await this.selectRepository(chatId, id);
+      await this.selectRepository(location, id);
       return;
     }
 
@@ -450,86 +467,86 @@ class TelegramConductorBridge {
       await this.telegram.answerCallbackQuery(callback.id);
       const id = data.slice("session:".length);
       if (this.registry.getSessionById(id)) {
-        await this.selectChat(chatId, id);
+        await this.selectChat(location, id);
         return;
       }
       if (this.registry.getWorkspaceById(id)) {
-        await this.selectBranch(chatId, id);
+        await this.selectBranch(location, id);
         return;
       }
-      await this.safeSendMessage(chatId, "Chat not found.");
+      await this.safeSendMessage(location, "Chat not found.");
       return;
     }
 
     await this.telegram.answerCallbackQuery(callback.id, "Not implemented yet");
   }
 
-  private async handleCommand(chatId: number, rawCommand: string): Promise<void> {
+  private async handleCommand(location: TelegramConversationTarget, rawCommand: string): Promise<void> {
     const command = normalizeCommand(rawCommand);
     switch (command) {
       case "/start":
       case "/home":
-        await this.showHome(chatId);
+        await this.showHome(location);
         return;
       case "/repos":
       case "/workspaces":
-        await this.showRepositories(chatId);
+        await this.showRepositories(location);
         return;
       case "/branches":
-        await this.showBranches(chatId);
+        await this.showBranches(location);
         return;
       case "/chats":
       case "/sessions":
-        await this.showChats(chatId);
+        await this.showChats(location);
         return;
       case "/status":
-        await this.showStatus(chatId);
+        await this.showStatus(location);
         return;
       case "/queue":
-        await this.showQueue(chatId);
+        await this.showQueue(location);
         return;
       case "/context":
-        await this.showContext(chatId, rawCommand);
+        await this.showContext(location, rawCommand);
         return;
       case "/new": {
-        const context = this.stateStore.getChatContext(chatId);
+        const context = this.stateStore.getConversationContext(location);
         if (!context.activeWorkspaceId) {
-          await this.showRepositories(chatId, "Select a repo and branch before creating a new chat.");
+          await this.showRepositories(location, "Select a repo and branch before creating a new chat.");
           return;
         }
-        this.stateStore.setComposeMode(chatId, "new_session", {
+        this.stateStore.setConversationComposeMode(location, "new_session", {
           composeWorkspaceId: context.activeWorkspaceId,
         });
-        await this.safeSendMessage(chatId, "Your next message will create a new chat on the current branch.");
+        await this.safeSendMessage(location, "Your next message will create a new chat on the current branch.");
         return;
       }
       case "/help":
-        await this.safeSendMessage(chatId, buildHelpText());
+        await this.safeSendMessage(location, buildHelpText());
         return;
       default:
-        await this.safeSendMessage(chatId, `Unknown command: ${command}`);
+        await this.safeSendMessage(location, `Unknown command: ${command}`);
     }
   }
 
-  private async handlePlainText(chatId: number, text: string): Promise<void> {
-    const context = this.stateStore.getChatContext(chatId);
-    const session = this.resolveSelectedSession(chatId);
+  private async handlePlainText(location: TelegramConversationTarget, text: string): Promise<void> {
+    const context = this.stateStore.getConversationContext(location);
+    const session = this.resolveSelectedSession(location);
 
     if (session) {
       const pendingRequest = this.pendingInputRequests.get(session.id);
       if (pendingRequest) {
-        await this.answerInputRequest(chatId, session, pendingRequest, text);
+        await this.answerInputRequest(location, session, pendingRequest, text);
         return;
       }
     }
 
     if (context.composeMode === "new_session") {
-      await this.createNewSession(chatId, text);
+      await this.createNewSession(location, text);
       return;
     }
 
     if (context.composeMode === "plan_feedback") {
-      await this.sendSteerFromContext(chatId, text, "Plan feedback sent.");
+      await this.sendSteerFromContext(location, text, "Plan feedback sent.");
       return;
     }
 
@@ -537,32 +554,32 @@ class TelegramConductorBridge {
       if (session) {
         const pendingRequest = this.pendingInputRequests.get(session.id);
         if (pendingRequest) {
-          await this.answerInputRequest(chatId, session, pendingRequest, text);
+          await this.answerInputRequest(location, session, pendingRequest, text);
           return;
         }
       }
-      this.stateStore.clearComposeMode(chatId);
-      await this.safeSendMessage(chatId, "There is no pending question right now.");
+      this.stateStore.clearConversationComposeMode(location);
+      await this.safeSendMessage(location, "There is no pending question right now.");
       return;
     }
 
     if (!session) {
       if (context.activeWorkspaceId) {
         await this.showHome(
-          chatId,
+          location,
           "There is no chat to continue on the current branch. Tap New Chat Here to create one.",
         );
         return;
       }
-      await this.showRepositories(chatId, "Select a repo, branch, and chat first.");
+      await this.showRepositories(location, "Select a repo, branch, and chat first.");
       return;
     }
 
-    await this.submitPrompt(chatId, session, text, false);
+    await this.submitPrompt(location, session, text, false);
   }
 
-  private resolveSelectedSession(chatId: number): ConductorSessionRef | null {
-    const context = this.stateStore.getChatContext(chatId);
+  private resolveSelectedSession(location: TelegramConversationTarget): ConductorSessionRef | null {
+    const context = this.stateStore.getConversationContext(location);
     if (context.activeSessionId) {
       return this.registry.getSessionById(context.activeSessionId);
     }
@@ -576,38 +593,38 @@ class TelegramConductorBridge {
       return null;
     }
 
-    this.stateStore.setActiveSession(chatId, workspace.activeSessionId);
+    this.stateStore.setConversationActiveSession(location, workspace.activeSessionId);
     return this.registry.getSessionById(workspace.activeSessionId);
   }
 
-  private async selectRepository(chatId: number, repositoryId: string): Promise<void> {
+  private async selectRepository(location: TelegramConversationTarget, repositoryId: string): Promise<void> {
     const workspaces = this.registry.listWorkspacesForRepository(repositoryId, config.pageSize);
     if (workspaces.length === 0) {
-      await this.safeSendMessage(chatId, "Repo not found.");
+      await this.safeSendMessage(location, "Repo not found.");
       return;
     }
 
-    await this.showBranches(chatId, `Switched to repo: ${formatRepositoryLabel(workspaces[0])}`, repositoryId);
+    await this.showBranches(location, `Switched to repo: ${formatRepositoryLabel(workspaces[0])}`, repositoryId);
   }
 
-  private async selectBranch(chatId: number, workspaceId: string): Promise<void> {
+  private async selectBranch(location: TelegramConversationTarget, workspaceId: string): Promise<void> {
     const workspace = this.registry.getWorkspaceById(workspaceId);
     if (!workspace) {
-      await this.safeSendMessage(chatId, "Workspace not found.");
+      await this.safeSendMessage(location, "Workspace not found.");
       return;
     }
 
-    this.stateStore.setActiveWorkspace(chatId, workspace.id);
+    this.stateStore.setConversationActiveWorkspace(location, workspace.id);
     if (workspace.activeSessionId) {
-      this.stateStore.setActiveSession(chatId, workspace.activeSessionId);
+      this.stateStore.setConversationActiveSession(location, workspace.activeSessionId);
       const session = this.registry.getSessionById(workspace.activeSessionId);
       if (session?.claudeSessionId) {
         this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
       }
     } else {
-      this.stateStore.updateChatContext(chatId, { activeSessionId: null });
+      this.stateStore.updateConversationContext(location, { activeSessionId: null, followSessionId: null });
     }
-    this.stateStore.clearComposeMode(chatId);
+    this.stateStore.clearConversationComposeMode(location);
 
     const workspaceName = formatWorkspaceOptionName(workspace);
     const branchName = formatBranchName(workspace);
@@ -616,31 +633,31 @@ class TelegramConductorBridge {
         ? `Switched to branch: ${branchName}`
         : `Switched to branch: ${branchName}\nWorkspace: ${workspaceName}`;
 
-    await this.showChats(chatId, prefix, workspace.id);
+    await this.showChats(location, prefix, workspace.id);
   }
 
-  private async selectChat(chatId: number, sessionId: string): Promise<void> {
+  private async selectChat(location: TelegramConversationTarget, sessionId: string): Promise<void> {
     const session = this.registry.getSessionById(sessionId);
     if (!session) {
-      await this.safeSendMessage(chatId, "Chat not found.");
+      await this.safeSendMessage(location, "Chat not found.");
       return;
     }
 
-    this.stateStore.setActiveWorkspace(chatId, session.workspaceId);
-    this.stateStore.setActiveSession(chatId, session.id);
-    this.stateStore.clearComposeMode(chatId);
+    this.stateStore.setConversationActiveWorkspace(location, session.workspaceId);
+    this.stateStore.setConversationActiveSession(location, session.id);
+    this.stateStore.clearConversationComposeMode(location);
     this.registry.updateWorkspaceActiveSession(session.workspaceId, session.id);
     if (session.claudeSessionId) {
       this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
     }
 
-    await this.showHome(chatId, `Switched to chat: ${formatSessionTitle(session.title)}`);
+    await this.showHome(location, `Switched to chat: ${formatSessionTitle(session.title)}`);
   }
 
-  private async showHome(chatId: number, prefix?: string): Promise<void> {
-    const context = this.stateStore.getChatContext(chatId);
+  private async showHome(location: TelegramConversationTarget, prefix?: string): Promise<void> {
+    const context = this.stateStore.getConversationContext(location);
     const workspace = context.activeWorkspaceId ? this.registry.getWorkspaceById(context.activeWorkspaceId) : null;
-    const session = this.resolveSelectedSession(chatId);
+    const session = this.resolveSelectedSession(location);
     const runtime = session ? (this.runtimes.get(session.id) ?? null) : null;
 
     const lines: string[] = [];
@@ -654,34 +671,41 @@ class TelegramConductorBridge {
     lines.push(`Current Chat: ${selectedChatLabel(session)}`);
     lines.push(`Status: ${this.sessionStatusLabel(session, runtime)}`);
     lines.push(`Mode: ${context.composeMode}`);
-    await this.safeSendMessage(chatId, lines.join("\n"), homeKeyboard());
+    if (location.messageThreadId !== null) {
+      lines.push(`Topic: ${location.messageThreadId}`);
+    }
+    await this.safeSendMessage(location, lines.join("\n"), homeKeyboard());
   }
 
-  private async showRepositories(chatId: number, prefix?: string): Promise<void> {
+  private async showRepositories(location: TelegramConversationTarget, prefix?: string): Promise<void> {
     const repositories = this.registry.listRepositories(config.pageSize);
     if (repositories.length === 0) {
-      await this.safeSendMessage(chatId, "No repos are available.");
+      await this.safeSendMessage(location, "No repos are available.");
       return;
     }
     const text = [prefix, "Select a repo:"].filter(Boolean).join("\n\n");
-    await this.safeSendMessage(chatId, text, repositoriesKeyboard(repositories));
+    await this.safeSendMessage(location, text, repositoriesKeyboard(repositories));
   }
 
-  private async showBranches(chatId: number, prefix?: string, repositoryId?: string): Promise<void> {
-    const context = this.stateStore.getChatContext(chatId);
+  private async showBranches(
+    location: TelegramConversationTarget,
+    prefix?: string,
+    repositoryId?: string,
+  ): Promise<void> {
+    const context = this.stateStore.getConversationContext(location);
     const currentWorkspace = context.activeWorkspaceId
       ? this.registry.getWorkspaceById(context.activeWorkspaceId)
       : null;
     const targetRepositoryId = repositoryId ?? currentWorkspace?.repositoryId ?? null;
     if (!targetRepositoryId) {
-      await this.showRepositories(chatId, prefix ?? "Select a repo first.");
+      await this.showRepositories(location, prefix ?? "Select a repo first.");
       return;
     }
 
     const workspaces = this.registry.listWorkspacesForRepository(targetRepositoryId, config.pageSize);
     if (workspaces.length === 0) {
       await this.safeSendMessage(
-        chatId,
+        location,
         `${prefix ? `${prefix}\n\n` : ""}There are no workspaces in the current repo.`,
       );
       return;
@@ -694,27 +718,27 @@ class TelegramConductorBridge {
       heading: "Select a branch:",
       prefix,
     });
-    await this.safeSendMessage(chatId, text, branchesKeyboard(workspaces));
+    await this.safeSendMessage(location, text, branchesKeyboard(workspaces));
   }
 
-  private async showChats(chatId: number, prefix?: string, workspaceId?: string): Promise<void> {
-    const context = this.stateStore.getChatContext(chatId);
+  private async showChats(location: TelegramConversationTarget, prefix?: string, workspaceId?: string): Promise<void> {
+    const context = this.stateStore.getConversationContext(location);
     const targetWorkspaceId = workspaceId ?? context.activeWorkspaceId ?? null;
     if (!targetWorkspaceId) {
-      await this.showRepositories(chatId, prefix ?? "Select a repo and branch first.");
+      await this.showRepositories(location, prefix ?? "Select a repo and branch first.");
       return;
     }
 
     const workspace = this.registry.getWorkspaceById(targetWorkspaceId);
     if (!workspace) {
-      await this.showRepositories(chatId, prefix ?? "Branch not found.");
+      await this.showRepositories(location, prefix ?? "Branch not found.");
       return;
     }
 
     const sessions = this.registry.listSessions(targetWorkspaceId, config.pageSize);
     if (sessions.length === 0) {
       await this.safeSendMessage(
-        chatId,
+        location,
         `${prefix ? `${prefix}\n\n` : ""}There are no chats on the current branch. Tap New Chat Here to create a new Conductor chat.`,
         homeKeyboard(),
       );
@@ -726,31 +750,31 @@ class TelegramConductorBridge {
       heading: "Select a chat:",
       prefix,
     });
-    await this.safeSendMessage(chatId, text, sessionsKeyboard(sessions));
+    await this.safeSendMessage(location, text, sessionsKeyboard(sessions));
   }
 
-  private async showInbox(chatId: number): Promise<void> {
+  private async showInbox(location: TelegramConversationTarget): Promise<void> {
     const sessions = this.registry.getInboxSessions(config.pageSize);
     if (sessions.length === 0) {
-      await this.safeSendMessage(chatId, "Inbox is empty.");
+      await this.safeSendMessage(location, "Inbox is empty.");
       return;
     }
-    await this.safeSendMessage(chatId, "Chats that need your attention:", inboxKeyboard(sessions));
+    await this.safeSendMessage(location, "Chats that need your attention:", inboxKeyboard(sessions));
   }
 
-  private async showStatus(chatId: number): Promise<void> {
-    await this.renderSessionPanel(chatId);
+  private async showStatus(location: TelegramConversationTarget): Promise<void> {
+    await this.renderSessionPanel(location);
   }
 
-  private async showQueue(chatId: number): Promise<void> {
-    const session = this.resolveSelectedSession(chatId);
+  private async showQueue(location: TelegramConversationTarget): Promise<void> {
+    const session = this.resolveSelectedSession(location);
     if (!session) {
-      await this.safeSendMessage(chatId, "Select a chat first.");
+      await this.safeSendMessage(location, "Select a chat first.");
       return;
     }
     const items = this.stateStore.listQueueForSession(session.id, 10);
     if (items.length === 0) {
-      await this.safeSendMessage(chatId, "The current chat has no queue.");
+      await this.safeSendMessage(location, "The current chat has no queue.");
       return;
     }
 
@@ -758,19 +782,19 @@ class TelegramConductorBridge {
     for (const item of items.reverse()) {
       lines.push(`${item.status} · ${item.text.slice(0, 80)}`);
     }
-    await this.safeSendMessage(chatId, lines.join("\n"));
+    await this.safeSendMessage(location, lines.join("\n"));
   }
 
-  private async showContext(chatId: number, rawCommand: string): Promise<void> {
-    const session = this.resolveSelectedSession(chatId);
+  private async showContext(location: TelegramConversationTarget, rawCommand: string): Promise<void> {
+    const session = this.resolveSelectedSession(location);
     if (!session) {
-      await this.safeSendMessage(chatId, "Select a chat first.");
+      await this.safeSendMessage(location, "Select a chat first.");
       return;
     }
 
     const limit = this.parseContextLimit(rawCommand);
     if (limit === null) {
-      await this.safeSendMessage(chatId, "Usage: /context or /context 12");
+      await this.safeSendMessage(location, "Usage: /context or /context 12");
       return;
     }
 
@@ -783,15 +807,16 @@ class TelegramConductorBridge {
       .reverse();
 
     if (entries.length === 0) {
-      await this.safeSendMessage(chatId, "There is no visible context for the current chat yet.");
+      await this.safeSendMessage(location, "There is no visible context for the current chat yet.");
       return;
     }
 
-    const existing = this.contextViewers.get(chatId);
+    const key = conversationKey(location);
+    const existing = this.contextViewers.get(key);
     const viewer: ContextViewerState = {
-      chatId,
       entryCount: entries.length,
       limit,
+      location,
       messageId: existing?.messageId ?? null,
       pageIndex: 0,
       pages: this.splitTextForTelegram(entries.join("\n\n"), 3200),
@@ -799,7 +824,7 @@ class TelegramConductorBridge {
       sessionTitle: formatSessionTitle(session.title),
     };
     viewer.pageIndex = Math.max(0, viewer.pages.length - 1);
-    this.contextViewers.set(chatId, viewer);
+    this.contextViewers.set(key, viewer);
     await this.renderContextViewer(viewer);
   }
 
@@ -822,26 +847,27 @@ class TelegramConductorBridge {
   }
 
   private async submitPrompt(
-    chatId: number,
+    location: TelegramConversationTarget,
     session: ConductorSessionRef,
     text: string,
     fromQueue: boolean,
     options?: {
       allowMissingRollout?: boolean;
+      suppressSentConfirmation?: boolean;
     },
   ): Promise<boolean> {
     if (session.agentType && session.agentType !== "codex") {
-      await this.safeSendMessage(chatId, "Only Codex sessions are supported right now.");
+      await this.safeSendMessage(location, "Only Codex sessions are supported right now.");
       return false;
     }
     if (!session.claudeSessionId) {
-      await this.safeSendMessage(chatId, "This chat is missing its underlying thread ID and cannot continue.");
+      await this.safeSendMessage(location, "This chat is missing its underlying thread ID and cannot continue.");
       return false;
     }
 
     if (!fromQueue && this.shouldQueueSession(session)) {
       this.stateStore.enqueuePrompt(session.id, session.claudeSessionId, "normal", text);
-      await this.safeSendMessage(chatId, "The current chat is busy. Your message was added to the queue.");
+      await this.safeSendMessage(location, "The current chat is busy. Your message was added to the queue.");
       return true;
     }
 
@@ -863,7 +889,8 @@ class TelegramConductorBridge {
     } catch (error) {
       const errorMessage = extractErrorMessage(error);
       logger.error("failed to submit prompt", {
-        chatId,
+        chatId: location.chatId,
+        messageThreadId: location.messageThreadId,
         sessionId: session.id,
         threadId: session.claudeSessionId,
         fromQueue,
@@ -871,18 +898,18 @@ class TelegramConductorBridge {
       });
 
       if (errorMessage.includes("no rollout found for thread id")) {
-        const context = this.stateStore.getChatContext(chatId);
+        const context = this.stateStore.getConversationContext(location);
         if (context.activeSessionId === session.id) {
-          this.stateStore.setActiveSession(chatId, null);
+          this.stateStore.setConversationActiveSession(location, null);
         }
         await this.showChats(
-          chatId,
+          location,
           "The underlying thread for this chat is no longer valid. Switch to another chat or tap New Chat Here to create a new one.",
         );
         return false;
       }
 
-      await this.safeSendMessage(chatId, "Send failed. Please try again later.");
+      await this.safeSendMessage(location, "Send failed. Please try again later.");
       return false;
     }
 
@@ -905,17 +932,17 @@ class TelegramConductorBridge {
       sentAt: new Date().toISOString(),
     });
 
-    if (!fromQueue) {
-      await this.safeSendMessage(chatId, "Sent.");
+    if (!fromQueue && !options?.suppressSentConfirmation) {
+      await this.safeSendMessage(location, "Sent.");
     }
     return true;
   }
 
-  private async createNewSession(chatId: number, text: string): Promise<void> {
-    const context = this.stateStore.getChatContext(chatId);
+  private async createNewSession(location: TelegramConversationTarget, text: string): Promise<void> {
+    const context = this.stateStore.getConversationContext(location);
     const workspaceId = context.composeWorkspaceId ?? context.activeWorkspaceId;
     if (!workspaceId) {
-      await this.showRepositories(chatId, "Select a repo and branch first.");
+      await this.showRepositories(location, "Select a repo and branch first.");
       return;
     }
 
@@ -936,29 +963,49 @@ class TelegramConductorBridge {
         title,
       });
 
-      this.stateStore.setActiveWorkspace(chatId, workspaceId);
-      this.stateStore.setActiveSession(chatId, session.id);
-      this.stateStore.clearComposeMode(chatId);
       this.sessionIdByThreadId.set(threadId, session.id);
+      const topicLocation = await this.createSessionTopic(location, title);
+      const sessionLocation = topicLocation ?? location;
 
-      await this.safeSendMessage(chatId, `Created chat: ${title}`);
-      await this.submitPrompt(chatId, session, text, false, {
+      this.stateStore.setConversationActiveWorkspace(location, workspaceId);
+      this.stateStore.setConversationActiveSession(location, session.id);
+      this.stateStore.clearConversationComposeMode(location);
+      if (topicLocation) {
+        this.stateStore.updateConversationContext(location, { followSessionId: null });
+        this.stateStore.setConversationActiveWorkspace(topicLocation, workspaceId);
+        this.stateStore.setConversationActiveSession(topicLocation, session.id);
+        this.stateStore.clearConversationComposeMode(topicLocation);
+      }
+
+      if (topicLocation) {
+        await this.safeSendMessage(location, `Created chat: ${title}\nContinue in the new Telegram topic.`);
+        await this.safeSendMessage(topicLocation, `Created chat: ${title}`);
+      } else {
+        await this.safeSendMessage(location, `Created chat: ${title}`);
+      }
+
+      await this.submitPrompt(sessionLocation, session, text, false, {
         allowMissingRollout: true,
+        suppressSentConfirmation: true,
       });
     } catch (error) {
       if (threadId) {
         await this.codex.archiveThread(threadId).catch(() => undefined);
       }
       logger.error("failed to create new session", error);
-      await this.safeSendMessage(chatId, "Failed to create a new chat.");
+      await this.safeSendMessage(location, "Failed to create a new chat.");
     }
   }
 
-  private async sendSteerFromContext(chatId: number, text: string, successText: string): Promise<void> {
-    const context = this.stateStore.getChatContext(chatId);
+  private async sendSteerFromContext(
+    location: TelegramConversationTarget,
+    text: string,
+    successText: string,
+  ): Promise<void> {
+    const context = this.stateStore.getConversationContext(location);
     if (!context.composeTargetSessionId || !context.composeTargetThreadId || !context.composeTargetTurnId) {
-      this.stateStore.clearComposeMode(chatId);
-      await this.safeSendMessage(chatId, "There is no active turn to revise.");
+      this.stateStore.clearConversationComposeMode(location);
+      await this.safeSendMessage(location, "There is no active turn to revise.");
       return;
     }
 
@@ -967,35 +1014,35 @@ class TelegramConductorBridge {
       expectedTurnId: context.composeTargetTurnId,
       input: text,
     });
-    this.stateStore.clearComposeMode(chatId);
+    this.stateStore.clearConversationComposeMode(location);
     const runtime = this.runtimes.get(context.composeTargetSessionId);
     if (runtime) {
       runtime.status = "active";
     }
     this.mirror.updateSessionStatus(context.composeTargetSessionId, "working");
-    await this.safeSendMessage(chatId, successText);
+    await this.safeSendMessage(location, successText);
   }
 
-  private async preparePlanRevision(chatId: number): Promise<void> {
-    const session = this.resolveSelectedSession(chatId);
+  private async preparePlanRevision(location: TelegramConversationTarget): Promise<void> {
+    const session = this.resolveSelectedSession(location);
     const runtime = session ? this.runtimes.get(session.id) : null;
     if (!session || !runtime) {
-      await this.safeSendMessage(chatId, "There is no plan to revise right now.");
+      await this.safeSendMessage(location, "There is no plan to revise right now.");
       return;
     }
 
-    this.stateStore.setComposeMode(chatId, "plan_feedback", {
+    this.stateStore.setConversationComposeMode(location, "plan_feedback", {
       composeTargetSessionId: session.id,
       composeTargetThreadId: runtime.threadId,
       composeTargetTurnId: runtime.turnId,
     });
-    await this.safeSendMessage(chatId, "Send your next message as plan feedback.");
+    await this.safeSendMessage(location, "Send your next message as plan feedback.");
   }
 
-  private async approvePlan(chatId: number): Promise<void> {
-    const session = this.resolveSelectedSession(chatId);
+  private async approvePlan(location: TelegramConversationTarget): Promise<void> {
+    const session = this.resolveSelectedSession(location);
     if (!session) {
-      await this.safeSendMessage(chatId, "Select a chat first.");
+      await this.safeSendMessage(location, "Select a chat first.");
       return;
     }
 
@@ -1003,13 +1050,13 @@ class TelegramConductorBridge {
     if (pendingRequest) {
       const approvalText =
         pendingRequest.questions[0]?.options?.[0]?.label ?? "The plan looks good. Please continue to implementation.";
-      await this.answerInputRequest(chatId, session, pendingRequest, approvalText);
+      await this.answerInputRequest(location, session, pendingRequest, approvalText);
       return;
     }
 
     const runtime = this.runtimes.get(session.id);
     if (!runtime) {
-      await this.safeSendMessage(chatId, "There is no active plan right now.");
+      await this.safeSendMessage(location, "There is no active plan right now.");
       return;
     }
 
@@ -1020,24 +1067,24 @@ class TelegramConductorBridge {
     });
     runtime.status = "active";
     this.mirror.updateSessionStatus(session.id, "working");
-    await this.safeSendMessage(chatId, "Approval sent.");
+    await this.safeSendMessage(location, "Approval sent.");
   }
 
-  private async prepareReply(chatId: number): Promise<void> {
-    const session = this.resolveSelectedSession(chatId);
+  private async prepareReply(location: TelegramConversationTarget): Promise<void> {
+    const session = this.resolveSelectedSession(location);
     const runtime = session ? this.runtimes.get(session.id) : null;
     const pendingRequest = session ? this.pendingInputRequests.get(session.id) : null;
     if (!session || !runtime || !pendingRequest) {
-      await this.safeSendMessage(chatId, "There is no pending question right now.");
+      await this.safeSendMessage(location, "There is no pending question right now.");
       return;
     }
 
-    this.stateStore.setComposeMode(chatId, "reply_required", {
+    this.stateStore.setConversationComposeMode(location, "reply_required", {
       composeTargetSessionId: session.id,
       composeTargetThreadId: runtime.threadId,
       composeTargetTurnId: runtime.turnId,
     });
-    await this.safeSendMessage(chatId, "Send your next message as the reply.");
+    await this.safeSendMessage(location, "Send your next message as the reply.");
   }
 
   private buildInputAnswers(questions: PendingInputQuestion[], text: string): Record<string, { answers: string[] }> {
@@ -1090,7 +1137,7 @@ class TelegramConductorBridge {
   }
 
   private async answerInputRequest(
-    chatId: number,
+    location: TelegramConversationTarget,
     session: ConductorSessionRef,
     request: PendingInputRequest,
     text: string,
@@ -1098,13 +1145,13 @@ class TelegramConductorBridge {
     const answers = this.buildInputAnswers(request.questions, text);
     await this.codex.respond(request.requestId, { answers });
     this.pendingInputRequests.delete(session.id);
-    this.stateStore.clearComposeMode(chatId);
+    this.stateStore.clearConversationComposeMode(location);
     const runtime = this.runtimes.get(session.id);
     if (runtime) {
       runtime.status = "active";
     }
     this.mirror.updateSessionStatus(session.id, "working");
-    await this.safeSendMessage(chatId, "Reply sent.");
+    await this.safeSendMessage(location, "Reply sent.");
   }
 
   private async handleCodexServerRequest(request: CodexServerRequest): Promise<void> {
@@ -1498,9 +1545,9 @@ class TelegramConductorBridge {
           ? replyKeyboard()
           : undefined);
     const _workspace = workspace;
-    const chatIds = this.stateStore.listFollowingChats(runtime.sessionId);
-    for (const chatId of chatIds) {
-      await this.renderSessionPanel(chatId, {
+    const locations = this.stateStore.listFollowingConversations(runtime.sessionId);
+    for (const location of locations) {
+      await this.renderSessionPanel(location, {
         bodyOverride: body,
         runtime,
         session,
@@ -1527,14 +1574,14 @@ class TelegramConductorBridge {
       return;
     }
 
-    const chatId = this.stateStore.listFollowingChats(sessionId)[0];
-    if (chatId === undefined) {
+    const location = this.stateStore.listFollowingConversations(sessionId)[0];
+    if (!location) {
       return;
     }
 
     this.stateStore.markPromptStarted(next.id);
     try {
-      await this.submitPrompt(chatId, session, next.text, true);
+      await this.submitPrompt(location, session, next.text, true);
       this.stateStore.markPromptFinished(next.id, "finished");
     } catch (error) {
       logger.error("queued prompt failed", error);
@@ -1542,12 +1589,36 @@ class TelegramConductorBridge {
     }
   }
 
-  private async safeSendMessage(chatId: number, text: string, keyboard?: TelegramInlineKeyboard): Promise<void> {
-    await this.telegram.sendMessage(
-      chatId,
-      truncate(text, 3800),
-      keyboard ? { reply_markup: { inline_keyboard: keyboard } } : undefined,
-    );
+  private async safeSendMessage(
+    target: number | TelegramConversationTarget,
+    text: string,
+    keyboard?: TelegramInlineKeyboard,
+  ): Promise<void> {
+    const location = typeof target === "number" ? { chatId: target, messageThreadId: null } : target;
+    await this.telegram.sendMessage(location.chatId, truncate(text, 3800), {
+      ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+      ...(location.messageThreadId !== null ? { message_thread_id: location.messageThreadId } : {}),
+    });
+  }
+
+  private async createSessionTopic(
+    location: TelegramConversationTarget,
+    title: string,
+  ): Promise<TelegramConversationTarget | null> {
+    try {
+      const topic = await this.telegram.createForumTopic(location.chatId, title.slice(0, 128));
+      return {
+        chatId: location.chatId,
+        messageThreadId: topic.message_thread_id,
+      };
+    } catch (error) {
+      logger.warn("failed to create telegram forum topic; continuing in the current conversation", {
+        chatId: location.chatId,
+        messageThreadId: location.messageThreadId,
+        error: extractErrorMessage(error),
+      });
+      return null;
+    }
   }
 
   private async syncTelegramCommands(): Promise<void> {
@@ -1602,10 +1673,10 @@ class TelegramConductorBridge {
 
   private async handleSessionPanelCallback(
     callback: TelegramCallbackQuery,
-    chatId: number,
+    location: TelegramConversationTarget,
     data: string,
   ): Promise<void> {
-    const panel = this.sessionPanels.get(chatId);
+    const panel = this.sessionPanels.get(conversationKey(location));
     const messageId = callback.message?.message_id;
     if (!messageId || !panel || panel.messageId !== messageId) {
       await this.telegram.answerCallbackQuery(callback.id, "That status panel is no longer active.");
@@ -1614,12 +1685,12 @@ class TelegramConductorBridge {
 
     switch (data) {
       case "panel:refresh":
-        await this.renderSessionPanel(chatId);
-        await this.telegram.answerCallbackQuery(callback.id, "Refreshed.");
+        await this.telegram.answerCallbackQuery(callback.id, "Refreshing...");
+        await this.renderSessionPanel(location);
         return;
       case "panel:close":
-        await this.closeSessionPanel(chatId);
         await this.telegram.answerCallbackQuery(callback.id);
+        await this.closeSessionPanel(location);
         return;
       default:
         await this.telegram.answerCallbackQuery(callback.id, "Not implemented yet");
@@ -1627,7 +1698,7 @@ class TelegramConductorBridge {
   }
 
   private async renderSessionPanel(
-    chatId: number,
+    location: TelegramConversationTarget,
     options?: {
       bodyOverride?: string;
       keyboard?: TelegramInlineKeyboard;
@@ -1636,11 +1707,11 @@ class TelegramConductorBridge {
       workspace?: WorkspaceRef | null;
     },
   ): Promise<void> {
-    const context = this.stateStore.getChatContext(chatId);
+    const context = this.stateStore.getConversationContext(location);
     const workspace =
       options?.workspace ??
       (context.activeWorkspaceId ? this.registry.getWorkspaceById(context.activeWorkspaceId) : null);
-    const session = options?.session ?? this.resolveSelectedSession(chatId);
+    const session = options?.session ?? this.resolveSelectedSession(location);
     const runtime = options?.runtime ?? (session ? (this.runtimes.get(session.id) ?? null) : null);
     const queueCount = session
       ? this.stateStore.listQueueForSession(session.id, 50).filter((item) => item.status === "queued").length
@@ -1660,9 +1731,12 @@ class TelegramConductorBridge {
     if (runtime?.turnId) {
       lines.push(`Turn: ${runtime.turnId}`);
     }
+    if (location.messageThreadId !== null) {
+      lines.push(`Topic: ${location.messageThreadId}`);
+    }
     const text = truncate(`${lines.join("\n")}\n\n${body}`, 3800);
     const keyboard = this.sessionPanelKeyboard(options?.keyboard);
-    await this.upsertSessionPanel(chatId, session?.id ?? null, text, keyboard);
+    await this.upsertSessionPanel(location, session?.id ?? null, text, keyboard);
   }
 
   private async resolveSessionPanelBody(
@@ -1708,13 +1782,14 @@ class TelegramConductorBridge {
   }
 
   private async upsertSessionPanel(
-    chatId: number,
+    location: TelegramConversationTarget,
     sessionId: string | null,
     text: string,
     keyboard: TelegramInlineKeyboard,
   ): Promise<void> {
     const keyboardFingerprint = JSON.stringify(keyboard);
-    const existing = this.sessionPanels.get(chatId);
+    const key = conversationKey(location);
+    const existing = this.sessionPanels.get(key);
     if (
       existing &&
       existing.messageId &&
@@ -1727,8 +1802,8 @@ class TelegramConductorBridge {
 
     if (existing?.messageId) {
       try {
-        await this.telegram.editMessageText(chatId, existing.messageId, text, keyboard);
-        this.sessionPanels.set(chatId, {
+        await this.telegram.editMessageText(location.chatId, existing.messageId, text, keyboard);
+        this.sessionPanels.set(key, {
           keyboardFingerprint,
           lastText: text,
           messageId: existing.messageId,
@@ -1740,10 +1815,11 @@ class TelegramConductorBridge {
       }
     }
 
-    const messageId = await this.telegram.sendMessage(chatId, text, {
+    const messageId = await this.telegram.sendMessage(location.chatId, text, {
       reply_markup: { inline_keyboard: keyboard },
+      ...(location.messageThreadId !== null ? { message_thread_id: location.messageThreadId } : {}),
     });
-    this.sessionPanels.set(chatId, {
+    this.sessionPanels.set(key, {
       keyboardFingerprint,
       lastText: text,
       messageId,
@@ -1751,22 +1827,23 @@ class TelegramConductorBridge {
     });
   }
 
-  private async closeSessionPanel(chatId: number): Promise<void> {
-    const panel = this.sessionPanels.get(chatId);
+  private async closeSessionPanel(location: TelegramConversationTarget): Promise<void> {
+    const key = conversationKey(location);
+    const panel = this.sessionPanels.get(key);
     if (!panel) {
       return;
     }
-    this.sessionPanels.delete(chatId);
+    this.sessionPanels.delete(key);
     if (!panel.messageId) {
       return;
     }
 
     try {
-      await this.telegram.deleteMessage(chatId, panel.messageId);
+      await this.telegram.deleteMessage(location.chatId, panel.messageId);
     } catch (error) {
       logger.warn("failed to delete session panel", error);
       try {
-        await this.telegram.editMessageText(chatId, panel.messageId, "Status panel hidden.");
+        await this.telegram.editMessageText(location.chatId, panel.messageId, "Status panel hidden.");
       } catch (editError) {
         logger.warn("failed to mark session panel as hidden", editError);
       }
@@ -1775,11 +1852,11 @@ class TelegramConductorBridge {
 
   private async handleContextViewerCallback(
     callback: TelegramCallbackQuery,
-    chatId: number,
+    location: TelegramConversationTarget,
     data: string,
   ): Promise<void> {
     const messageId = callback.message?.message_id;
-    const viewer = this.contextViewers.get(chatId);
+    const viewer = this.contextViewers.get(conversationKey(location));
 
     if (!messageId || !viewer || viewer.messageId !== messageId) {
       await this.telegram.answerCallbackQuery(callback.id, "That context preview is no longer active.");
@@ -1803,11 +1880,12 @@ class TelegramConductorBridge {
         }
         break;
       case "context:refresh":
+        await this.telegram.answerCallbackQuery(callback.id, "Refreshing...");
         notice = await this.refreshContextViewer(viewer);
         break;
       case "context:close":
-        await this.closeContextViewer(viewer);
         await this.telegram.answerCallbackQuery(callback.id);
+        await this.closeContextViewer(viewer);
         return;
       default:
         await this.telegram.answerCallbackQuery(callback.id, "Not implemented yet");
@@ -1815,7 +1893,9 @@ class TelegramConductorBridge {
     }
 
     await this.renderContextViewer(viewer);
-    await this.telegram.answerCallbackQuery(callback.id, notice);
+    if (notice && data !== "context:refresh") {
+      await this.telegram.answerCallbackQuery(callback.id, notice);
+    }
   }
 
   private async refreshContextViewer(viewer: ContextViewerState): Promise<string | undefined> {
@@ -1849,7 +1929,7 @@ class TelegramConductorBridge {
 
     if (viewer.messageId) {
       try {
-        await this.telegram.editMessageText(viewer.chatId, viewer.messageId, text, keyboard);
+        await this.telegram.editMessageText(viewer.location.chatId, viewer.messageId, text, keyboard);
         return;
       } catch (error) {
         logger.warn("failed to edit context viewer, sending new message", error);
@@ -1857,8 +1937,9 @@ class TelegramConductorBridge {
       }
     }
 
-    const messageId = await this.telegram.sendMessage(viewer.chatId, text, {
+    const messageId = await this.telegram.sendMessage(viewer.location.chatId, text, {
       reply_markup: { inline_keyboard: keyboard },
+      ...(viewer.location.messageThreadId !== null ? { message_thread_id: viewer.location.messageThreadId } : {}),
     });
     viewer.messageId = messageId;
   }
@@ -1898,17 +1979,17 @@ class TelegramConductorBridge {
   }
 
   private async closeContextViewer(viewer: ContextViewerState): Promise<void> {
-    this.contextViewers.delete(viewer.chatId);
+    this.contextViewers.delete(conversationKey(viewer.location));
     if (!viewer.messageId) {
       return;
     }
 
     try {
-      await this.telegram.deleteMessage(viewer.chatId, viewer.messageId);
+      await this.telegram.deleteMessage(viewer.location.chatId, viewer.messageId);
     } catch (error) {
       logger.warn("failed to delete context viewer", error);
       try {
-        await this.telegram.editMessageText(viewer.chatId, viewer.messageId, "Context preview closed.");
+        await this.telegram.editMessageText(viewer.location.chatId, viewer.messageId, "Context preview closed.");
       } catch (editError) {
         logger.warn("failed to mark context viewer as closed", editError);
       }
