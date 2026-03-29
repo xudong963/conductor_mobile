@@ -42,6 +42,7 @@ function createBridge() {
     markPromptFinished: vi.fn(),
   };
   const telegram = {
+    answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
     editMessageText: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(null),
   };
@@ -320,5 +321,115 @@ describe("TelegramConductorBridge", () => {
     );
     expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Current queue:");
     expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("queued · continue");
+  });
+
+  it("treats short status probes as status checks instead of chat input", async () => {
+    const { bridge } = createBridge();
+    const showStatus = vi.fn().mockResolvedValue(undefined);
+    const submitPrompt = vi.fn();
+
+    (bridge as unknown as { showStatus: typeof showStatus }).showStatus = showStatus;
+    (bridge as unknown as { submitPrompt: typeof submitPrompt }).submitPrompt = submitPrompt;
+
+    await (
+      bridge as unknown as {
+        handlePlainText: (location: { chatId: number; messageThreadId: number | null }, text: string) => Promise<void>;
+      }
+    ).handlePlainText({ chatId: 99, messageThreadId: null }, "目前什么状态");
+
+    expect(showStatus).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
+    expect(submitPrompt).not.toHaveBeenCalled();
+  });
+
+  it("skips redundant context viewer edits when the rendered payload is unchanged", async () => {
+    const { bridge, telegram } = createBridge();
+
+    telegram.sendMessage.mockResolvedValueOnce(123);
+
+    const viewer = {
+      entryCount: 1,
+      keyboardFingerprint: null,
+      lastText: null,
+      limit: 12,
+      location: { chatId: 99, messageThreadId: null },
+      messageId: null,
+      pageIndex: 0,
+      pages: ["assistant: hello"],
+      sessionId: "session-1",
+      sessionTitle: "Current Session",
+    };
+
+    await (
+      bridge as unknown as {
+        renderContextViewer: (viewer: unknown) => Promise<void>;
+      }
+    ).renderContextViewer(viewer);
+    await (
+      bridge as unknown as {
+        renderContextViewer: (viewer: unknown) => Promise<void>;
+      }
+    ).renderContextViewer(viewer);
+
+    expect(telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(telegram.editMessageText).not.toHaveBeenCalled();
+  });
+
+  it("does not re-edit the context viewer when paging stays at the oldest page", async () => {
+    const { bridge, telegram } = createBridge();
+
+    const viewer = {
+      entryCount: 1,
+      keyboardFingerprint: null as string | null,
+      lastText: null as string | null,
+      limit: 12,
+      location: { chatId: 99, messageThreadId: null },
+      messageId: 456,
+      pageIndex: 0,
+      pages: ["assistant: hello"],
+      sessionId: "session-1",
+      sessionTitle: "Current Session",
+    };
+
+    viewer.lastText = (
+      bridge as unknown as {
+        renderContextViewerText: (state: unknown) => string;
+      }
+    ).renderContextViewerText(viewer);
+    viewer.keyboardFingerprint = JSON.stringify(
+      (
+        bridge as unknown as {
+          contextViewerKeyboard: (state: unknown) => unknown;
+        }
+      ).contextViewerKeyboard(viewer),
+    );
+
+    (
+      bridge as unknown as {
+        contextViewers: Map<string, unknown>;
+      }
+    ).contextViewers.set("99:0", viewer);
+
+    await (
+      bridge as unknown as {
+        handleContextViewerCallback: (
+          callback: {
+            id: string;
+            message: { message_id: number };
+          },
+          location: { chatId: number; messageThreadId: number | null },
+          data: string,
+        ) => Promise<void>;
+      }
+    ).handleContextViewerCallback(
+      {
+        id: "callback-1",
+        message: { message_id: 456 },
+      },
+      { chatId: 99, messageThreadId: null },
+      "context:older",
+    );
+
+    expect(telegram.editMessageText).not.toHaveBeenCalled();
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith("callback-1", "Already at the oldest page.");
   });
 });

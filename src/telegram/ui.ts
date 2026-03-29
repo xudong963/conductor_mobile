@@ -6,8 +6,8 @@ import {
   formatWorkspaceLabel,
 } from "../utils/text.js";
 
-export function homeKeyboard(): TelegramInlineKeyboard {
-  return [
+export function homeKeyboard(options?: { showStop?: boolean }): TelegramInlineKeyboard {
+  const rows: TelegramInlineKeyboard = [
     [
       { text: "Continue Here", callback_data: "home:continue" },
       { text: "New Chat Here", callback_data: "home:new" },
@@ -22,6 +22,10 @@ export function homeKeyboard(): TelegramInlineKeyboard {
     ],
     [{ text: "Help", callback_data: "home:help" }],
   ];
+  if (options?.showStop) {
+    rows.splice(1, 0, [{ text: "Stop Current Turn", callback_data: "home:stop" }]);
+  }
+  return rows;
 }
 
 export function workspacesKeyboard(workspaces: WorkspaceRef[]): TelegramInlineKeyboard {

@@ -29,6 +29,7 @@ import type {
 } from "./types.js";
 import { logger } from "./utils/logger.js";
 import { KeyedSerialTaskQueue } from "./utils/keyed-serial-task-queue.js";
+import { isStatusProbeText } from "./utils/intent.js";
 import {
   extractHumanText,
   formatBranchName,
@@ -61,6 +62,8 @@ interface PendingInputRequest {
 
 interface ContextViewerState {
   entryCount: number;
+  keyboardFingerprint: string | null;
+  lastText: string | null;
   limit: number;
   location: TelegramConversationTarget;
   messageId: number | null;
@@ -93,7 +96,7 @@ interface RuntimeState {
   model: string | null;
   planText: string | null;
   sessionId: string;
-  status: "active" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
+  status: "active" | "cancelling" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
   threadId: string;
   turnId: string;
 }
@@ -247,6 +250,7 @@ const BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "workspaces", description: "Choose a repo" },
   { command: "sessions", description: "Choose a chat" },
   { command: "status", description: "Refresh the current status panel" },
+  { command: "stop", description: "Interrupt the current turn" },
   { command: "queue", description: "Show the current chat queue" },
   { command: "context", description: "Open the recent context viewer" },
   { command: "new", description: "Create a new chat with the next message" },
@@ -266,6 +270,7 @@ function buildHelpText(): string {
     "/workspaces  Choose a repo",
     "/sessions  Choose a chat",
     "/status  Open or refresh the current status panel",
+    "/stop  Interrupt the current turn",
     "/queue  Show the current chat queue",
     "/context [N]  Open the paginated recent context viewer",
     "/new  Make the next message create a new chat on the current branch",
@@ -273,6 +278,7 @@ function buildHelpText(): string {
     "",
     "You can also tap Help on the home screen.",
     "Plain text continues the currently selected chat.",
+    "Short status questions like 'status' or '目前什么状态' refresh the status panel.",
     "In forum-enabled supergroups, each chat streams in its dedicated topic.",
   ].join("\n");
 }
@@ -536,6 +542,12 @@ export class TelegramConductorBridge {
       return;
     }
 
+    if (data === "home:stop") {
+      const text = await this.interruptCurrentTurn(location, { suppressMessage: true });
+      await this.telegram.answerCallbackQuery(callback.id, text);
+      return;
+    }
+
     if (data === "back:home") {
       await this.telegram.answerCallbackQuery(callback.id);
       await this.showHome(location);
@@ -622,6 +634,9 @@ export class TelegramConductorBridge {
       case "/status":
         await this.showStatus(location);
         return;
+      case "/stop":
+        await this.interruptCurrentTurn(location);
+        return;
       case "/queue":
         await this.showQueue(location);
         return;
@@ -649,6 +664,11 @@ export class TelegramConductorBridge {
   }
 
   private async handlePlainText(location: TelegramConversationTarget, text: string): Promise<void> {
+    if (isStatusProbeText(text)) {
+      await this.showStatus(location);
+      return;
+    }
+
     const context = this.stateStore.getConversationContext(location);
     const session = this.resolveSelectedSession(location);
 
@@ -905,7 +925,7 @@ export class TelegramConductorBridge {
     if (location.messageThreadId !== null) {
       lines.push(`Topic: ${location.messageThreadId}`);
     }
-    await this.safeSendMessage(location, lines.join("\n"), homeKeyboard());
+    await this.safeSendMessage(location, lines.join("\n"), homeKeyboard({ showStop: this.canInterruptTurn(runtime) }));
   }
 
   private async showRepositories(location: TelegramConversationTarget, prefix?: string): Promise<void> {
@@ -1070,6 +1090,8 @@ export class TelegramConductorBridge {
     const existing = this.contextViewers.get(key);
     const viewer: ContextViewerState = {
       entryCount: entries.length,
+      keyboardFingerprint: existing?.keyboardFingerprint ?? null,
+      lastText: existing?.lastText ?? null,
       limit,
       location,
       messageId: existing?.messageId ?? null,
@@ -1122,7 +1144,10 @@ export class TelegramConductorBridge {
 
     if (!fromQueue && this.shouldQueueSession(session)) {
       this.stateStore.enqueuePrompt(session.id, session.claudeSessionId, "normal", text);
-      await this.safeSendMessage(location, "The current chat is busy. Your message was added to the queue.");
+      await this.safeSendMessage(
+        location,
+        "The current chat is busy. Your message was added to the queue. Use /status or /queue to check progress.",
+      );
       return "queued";
     }
 
@@ -1358,6 +1383,60 @@ export class TelegramConductorBridge {
       composeTargetTurnId: runtime.turnId,
     });
     await this.safeSendMessage(location, "Send your next message as the reply.");
+  }
+
+  private canInterruptTurn(runtime: RuntimeState | null): boolean {
+    return Boolean(runtime && !["completed", "failed"].includes(runtime.status));
+  }
+
+  private async interruptCurrentTurn(
+    location: TelegramConversationTarget,
+    options?: { suppressMessage?: boolean },
+  ): Promise<string> {
+    const session = this.resolveSelectedSession(location);
+    if (!session) {
+      const text = "Select a chat first.";
+      if (!options?.suppressMessage) {
+        await this.safeSendMessage(location, text);
+      }
+      return text;
+    }
+
+    const runtime = this.runtimes.get(session.id) ?? null;
+    if (!runtime?.turnId) {
+      const text =
+        session.status === "working" || session.status === "cancelling"
+          ? "This chat is busy, but the active turn cannot be interrupted from the bridge right now."
+          : "There is no active turn to interrupt.";
+      if (!options?.suppressMessage) {
+        await this.safeSendMessage(location, text);
+      }
+      return text;
+    }
+
+    if (runtime.status === "cancelling") {
+      const text = "Interrupt already requested.";
+      if (!options?.suppressMessage) {
+        await this.safeSendMessage(location, text);
+      }
+      return text;
+    }
+
+    await this.codex.interruptTurn({
+      threadId: runtime.threadId,
+      turnId: runtime.turnId,
+    });
+    runtime.status = "cancelling";
+    this.pendingInputRequests.delete(session.id);
+    this.stateStore.clearConversationComposeMode(location);
+    this.mirror.updateSessionStatus(session.id, "cancelling");
+    await this.pushRuntimeUpdate(runtime, "Interrupt requested...");
+
+    const text = "Interrupt requested.";
+    if (!options?.suppressMessage) {
+      await this.safeSendMessage(location, text);
+    }
+    return text;
   }
 
   private buildInputAnswers(questions: PendingInputQuestion[], text: string): Record<string, { answers: string[] }> {
@@ -1856,6 +1935,8 @@ export class TelegramConductorBridge {
       return session?.status ?? "idle";
     }
     switch (runtime.status) {
+      case "cancelling":
+        return "cancelling";
       case "waiting_plan":
         return "needs_plan_response";
       case "waiting_user_input":
@@ -1895,6 +1976,9 @@ export class TelegramConductorBridge {
     }
     if (runtime.status === "waiting_plan") {
       return "Waiting for your plan approval.";
+    }
+    if (runtime.status === "cancelling") {
+      return activityBlock ? `${activityBlock}\n\nInterrupt requested...` : "Interrupt requested...";
     }
     if (activityBlock) {
       return activityBlock;
@@ -2093,6 +2177,11 @@ export class TelegramConductorBridge {
         await this.telegram.answerCallbackQuery(callback.id, "Refreshing...");
         await this.renderSessionPanel(location);
         return;
+      case "panel:interrupt": {
+        const text = await this.interruptCurrentTurn(location, { suppressMessage: true });
+        await this.telegram.answerCallbackQuery(callback.id, text);
+        return;
+      }
       case "panel:close":
         await this.telegram.answerCallbackQuery(callback.id);
         await this.closeSessionPanel(location);
@@ -2146,7 +2235,7 @@ export class TelegramConductorBridge {
       lines.push(`Topic: ${location.messageThreadId}`);
     }
     const text = truncate(`${lines.join("\n")}\n\n${body}`, 3800);
-    const keyboard = this.sessionPanelKeyboard(options?.keyboard);
+    const keyboard = this.sessionPanelKeyboard(options?.keyboard, this.canInterruptTurn(runtime));
     await this.upsertSessionPanel(location, session?.id ?? null, text, keyboard);
   }
 
@@ -2188,8 +2277,7 @@ export class TelegramConductorBridge {
       }
 
       if (existing?.messageId && existing.sessionId === runtime.sessionId && existing.turnId === runtime.turnId) {
-        try {
-          await this.telegram.editMessageText(location.chatId, existing.messageId, nextText, keyboard);
+        const persistExistingMessage = () => {
           this.sessionStreams.set(key, {
             keyboardFingerprint,
             lastSentAt: now,
@@ -2198,9 +2286,60 @@ export class TelegramConductorBridge {
             sessionId: runtime.sessionId,
             turnId: runtime.turnId,
           });
+        };
+
+        try {
+          await this.telegram.editMessageText(location.chatId, existing.messageId, nextText, keyboard);
+          persistExistingMessage();
           return;
         } catch (error) {
-          logger.warn("failed to edit session stream, sending new message", error);
+          const details = summarizeTelegramError(error);
+          if (details.message.toLowerCase().includes("message is not modified")) {
+            persistExistingMessage();
+            return;
+          }
+
+          logger.warn("failed to edit session stream", {
+            chatId: location.chatId,
+            messageId: existing.messageId,
+            messageThreadId: location.messageThreadId,
+            sessionId: runtime.sessionId,
+            turnId: runtime.turnId,
+            error: details,
+          });
+
+          if (runtime.status === "active" || isTransientTelegramError(error)) {
+            return;
+          }
+
+          await sleep(250);
+          try {
+            await this.telegram.editMessageText(location.chatId, existing.messageId, nextText, keyboard);
+            persistExistingMessage();
+            return;
+          } catch (retryError) {
+            logger.warn("failed to retry session stream edit", {
+              chatId: location.chatId,
+              messageId: existing.messageId,
+              messageThreadId: location.messageThreadId,
+              sessionId: runtime.sessionId,
+              turnId: runtime.turnId,
+              error: summarizeTelegramError(retryError),
+            });
+          }
+
+          try {
+            await this.telegram.deleteMessage(location.chatId, existing.messageId);
+          } catch (deleteError) {
+            logger.warn("failed to delete stale session stream", {
+              chatId: location.chatId,
+              messageId: existing.messageId,
+              messageThreadId: location.messageThreadId,
+              sessionId: runtime.sessionId,
+              turnId: runtime.turnId,
+              error: summarizeTelegramError(deleteError),
+            });
+          }
         }
       }
 
@@ -2236,7 +2375,9 @@ export class TelegramConductorBridge {
           ? "Waiting for your reply."
           : runtime.status === "waiting_plan"
             ? "Waiting for plan approval."
-            : "Processing...")
+            : runtime.status === "cancelling"
+              ? "Interrupt requested..."
+              : "Processing...")
       );
     }
 
@@ -2252,8 +2393,11 @@ export class TelegramConductorBridge {
     return preview ?? "Waiting for new messages.";
   }
 
-  private sessionPanelKeyboard(extraKeyboard?: TelegramInlineKeyboard): TelegramInlineKeyboard {
+  private sessionPanelKeyboard(extraKeyboard?: TelegramInlineKeyboard, showInterrupt = false): TelegramInlineKeyboard {
     const keyboard = extraKeyboard ? extraKeyboard.map((row) => [...row]) : [];
+    if (showInterrupt) {
+      keyboard.push([{ text: "Stop Current Turn", callback_data: "panel:interrupt" }]);
+    }
     keyboard.push([
       { text: "Refresh Status", callback_data: "panel:refresh" },
       { text: "Hide Panel", callback_data: "panel:close" },
@@ -2408,10 +2552,17 @@ export class TelegramConductorBridge {
   private async renderContextViewer(viewer: ContextViewerState): Promise<void> {
     const text = this.renderContextViewerText(viewer);
     const keyboard = this.contextViewerKeyboard(viewer);
+    const keyboardFingerprint = JSON.stringify(keyboard);
+
+    if (viewer.messageId && viewer.lastText === text && viewer.keyboardFingerprint === keyboardFingerprint) {
+      return;
+    }
 
     if (viewer.messageId) {
       try {
         await this.telegram.editMessageText(viewer.location.chatId, viewer.messageId, text, keyboard);
+        viewer.lastText = text;
+        viewer.keyboardFingerprint = keyboardFingerprint;
         return;
       } catch (error) {
         logger.warn("failed to edit context viewer, sending new message", error);
@@ -2424,6 +2575,8 @@ export class TelegramConductorBridge {
       ...(viewer.location.messageThreadId !== null ? { message_thread_id: viewer.location.messageThreadId } : {}),
     });
     viewer.messageId = messageId;
+    viewer.lastText = text;
+    viewer.keyboardFingerprint = keyboardFingerprint;
   }
 
   private renderContextViewerText(viewer: ContextViewerState): string {
