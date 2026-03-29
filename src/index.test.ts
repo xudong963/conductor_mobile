@@ -28,10 +28,13 @@ function createBridge() {
   const registry = {
     findSessionByThreadId: vi.fn(),
     getSessionById: vi.fn(),
+    getWorkspaceById: vi.fn(),
   };
   const stateStore = {
+    getConversationContext: vi.fn(),
     setTelegramCursor: vi.fn(),
     getSessionById: vi.fn(),
+    listQueueForSession: vi.fn().mockReturnValue([]),
     listFollowingConversations: vi.fn(),
     getNextQueuedPrompt: vi.fn(),
     markPromptStarted: vi.fn(),
@@ -158,6 +161,163 @@ describe("TelegramConductorBridge", () => {
     expect(stateStore.markPromptStarted).toHaveBeenCalledWith(7);
     expect(stateStore.retryPrompt).toHaveBeenCalledWith(7);
     expect(stateStore.markPromptFinished).not.toHaveBeenCalled();
+  });
+
+  it("includes the active execution detail in the runtime body", () => {
+    const { bridge } = createBridge();
+
+    const body = (
+      bridge as unknown as {
+        resolveRuntimeBody: (
+          runtime: Record<string, unknown>,
+          bodyOverride: string | undefined,
+          activePlaceholder: string | null,
+        ) => string | null;
+      }
+    ).resolveRuntimeBody(
+      {
+        activityText: "Running command: npm run build",
+        assistantText: "Previous update",
+        lastEventAt: "2026-03-29T14:57:38.107Z",
+        model: null,
+        planText: null,
+        sessionId: "session-1",
+        status: "active",
+        threadId: "thread-1",
+        turnId: "turn-1",
+      },
+      undefined,
+      "Working...",
+    );
+
+    expect(body).toContain("Current activity: Running command: npm run build");
+    expect(body).toContain("Last event: 2026-03-29 14:57");
+    expect(body).toContain("Latest assistant text:");
+    expect(body).toContain("Previous update");
+  });
+
+  it("surfaces command execution progress in the session panel", async () => {
+    const { bridge, registry, stateStore, telegram } = createBridge();
+
+    registry.findSessionByThreadId.mockReturnValue({ id: "session-1" });
+    registry.getSessionById.mockReturnValue({
+      id: "session-1",
+      workspaceId: "workspace-1",
+      status: "working",
+      model: "gpt-5.4",
+      title: "Fix freezing issue",
+    });
+    registry.getWorkspaceById.mockReturnValue({
+      id: "workspace-1",
+      branch: "xudong963/investigate-freeze",
+      directoryName: "krakow",
+      repositoryId: "repo-1",
+      activeSessionId: "session-1",
+      updatedAt: "2026-03-29 14:57:38",
+      rootPath: "/tmp/workspaces/repo",
+      repositoryName: "conductor_mobile",
+    });
+    stateStore.getConversationContext.mockReturnValue({
+      activeSessionId: "session-1",
+      activeWorkspaceId: "workspace-1",
+      chatId: 12,
+      composeMode: "none",
+      composeTargetSessionId: null,
+      composeTargetThreadId: null,
+      composeTargetTurnId: null,
+      composeWorkspaceId: null,
+      followSessionId: "session-1",
+      messageThreadId: null,
+      updatedAt: "2026-03-29T14:57:38.107Z",
+    });
+    stateStore.listFollowingConversations.mockReturnValue([{ chatId: 12, messageThreadId: null }]);
+
+    await (
+      bridge as unknown as {
+        handleCodexNotification: (notification: { method: string; params: Record<string, unknown> }) => Promise<void>;
+      }
+    ).handleCodexNotification({
+      method: "item/started",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          type: "commandExecution",
+          command: "npm run build",
+        },
+      },
+    });
+
+    expect(telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Activity: Running command: npm run build");
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Current activity: Running command: npm run build");
+  });
+
+  it("shows the current execution state in /queue output", async () => {
+    const { bridge, stateStore, telegram } = createBridge();
+
+    stateStore.listQueueForSession.mockReturnValue([
+      {
+        id: 9,
+        status: "queued",
+        text: "continue",
+      },
+    ]);
+    (
+      bridge as unknown as {
+        resolveSelectedSession: (location: { chatId: number; messageThreadId: number | null }) => {
+          id: string;
+          status: string;
+          title: string;
+        };
+      }
+    ).resolveSelectedSession = vi.fn().mockReturnValue({
+      id: "session-1",
+      status: "working",
+      title: "Fix freezing issue",
+    });
+    (
+      bridge as unknown as {
+        runtimes: Map<
+          string,
+          {
+            activityText: string | null;
+            assistantText: string;
+            lastEventAt: string | null;
+            model: string | null;
+            planText: string | null;
+            sessionId: string;
+            status: "active" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
+            threadId: string;
+            turnId: string;
+          }
+        >;
+      }
+    ).runtimes.set("session-1", {
+      activityText: "Running command: npm run build",
+      assistantText: "",
+      lastEventAt: "2026-03-29T14:57:38.107Z",
+      model: null,
+      planText: null,
+      sessionId: "session-1",
+      status: "active",
+      threadId: "thread-1",
+      turnId: "turn-1",
+    });
+
+    await (
+      bridge as unknown as {
+        showQueue: (location: { chatId: number; messageThreadId: number | null }) => Promise<void>;
+      }
+    ).showQueue({ chatId: 12, messageThreadId: null });
+
+    expect(telegram.sendMessage).toHaveBeenCalledWith(
+      12,
+      expect.stringContaining("Current execution:\nRunning command: npm run build"),
+      {},
+    );
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Current queue:");
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("queued · continue");
   });
 
   it("treats short status probes as status checks instead of chat input", async () => {
