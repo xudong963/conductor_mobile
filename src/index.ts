@@ -90,7 +90,9 @@ interface SessionStreamState {
 }
 
 interface RuntimeState {
+  activityText: string | null;
   assistantText: string;
+  lastEventAt: string | null;
   model: string | null;
   planText: string | null;
   sessionId: string;
@@ -128,6 +130,59 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
+}
+
+function formatRuntimeEventAt(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  return value.length >= 16 ? value.slice(0, 16).replace("T", " ") : value;
+}
+
+function describeRuntimeActivity(item: Record<string, unknown>, phase: "started" | "completed"): string | null {
+  const itemType = asString(item.type);
+  if (!itemType) {
+    return null;
+  }
+
+  switch (itemType) {
+    case "agentMessage":
+      return phase === "started" ? "Composing reply..." : null;
+    case "commandExecution": {
+      const command = truncate(asString(item.command) ?? "command", 120);
+      const exitCode = typeof item.exitCode === "number" ? item.exitCode : null;
+      if (phase === "started") {
+        return `Running command: ${command}`;
+      }
+      return `Command finished${exitCode !== null ? ` (exit ${exitCode})` : ""}: ${command}`;
+    }
+    case "mcpToolCall":
+    case "dynamicToolCall":
+    case "collabAgentToolCall": {
+      const label = [asString(item.server), asString(item.tool) ?? asString(item.name)]
+        .filter((part): part is string => Boolean(part))
+        .join("/");
+      if (phase === "started") {
+        return `Calling tool: ${label || "tool"}`;
+      }
+      return `Tool finished: ${label || "tool"}`;
+    }
+    case "webSearch": {
+      const query = truncate(asString(item.query) ?? "query", 120);
+      if (phase === "started") {
+        return `Searching the web: ${query}`;
+      }
+      return `Search finished: ${query}`;
+    }
+    case "fileChange":
+      return phase === "started" ? "Applying file changes..." : "File changes prepared.";
+    case "reasoning":
+      return phase === "started" ? "Reasoning..." : "Reasoning step finished.";
+    case "plan":
+      return phase === "started" ? "Preparing plan..." : "Plan ready for review.";
+    default:
+      return phase === "started" ? `Working on ${itemType}...` : `Finished ${itemType}.`;
+  }
 }
 
 function extractErrorMessage(error: unknown): string {
@@ -987,15 +1042,39 @@ export class TelegramConductorBridge {
       await this.safeSendMessage(location, "Select a chat first.");
       return;
     }
+    const runtime = this.runtimes.get(session.id) ?? null;
     const items = this.stateStore.listQueueForSession(session.id, 10);
-    if (items.length === 0) {
+    if (items.length === 0 && !runtime) {
       await this.safeSendMessage(location, "The current chat has no queue.");
       return;
     }
 
-    const lines = ["Current queue:"];
-    for (const item of items.reverse()) {
-      lines.push(`${item.status} · ${item.text.slice(0, 80)}`);
+    const lines: string[] = [];
+    if (runtime) {
+      lines.push("Current execution:");
+      lines.push(
+        runtime.activityText
+          ? runtime.activityText
+          : this.sessionStatusLabel(session, runtime) === "working"
+            ? "Working..."
+            : this.sessionStatusLabel(session, runtime),
+      );
+      if (runtime.lastEventAt) {
+        lines.push(`Last event: ${formatRuntimeEventAt(runtime.lastEventAt)}`);
+      }
+      if (runtime.turnId) {
+        lines.push(`Turn: ${runtime.turnId}`);
+      }
+    }
+
+    if (items.length > 0) {
+      if (lines.length > 0) {
+        lines.push("");
+      }
+      lines.push("Current queue:");
+      for (const item of items.reverse()) {
+        lines.push(`${item.status} · ${item.text.slice(0, 80)}`);
+      }
     }
     await this.safeSendMessage(location, lines.join("\n"));
   }
@@ -1148,11 +1227,13 @@ export class TelegramConductorBridge {
             turnId,
           }
         : {
+            activityText: null,
             sessionId: session.id,
             threadId: session.claudeSessionId,
             turnId,
             status: "active",
             assistantText: "",
+            lastEventAt: null,
             planText: null,
             model: session.model,
           },
@@ -1545,6 +1626,7 @@ export class TelegramConductorBridge {
     const session = this.registry.getSessionById(sessionId);
     const runtime = this.ensureRuntime(sessionId, threadId, turnId, session?.model ?? null);
     runtime.status = "waiting_user_input";
+    this.recordRuntimeEvent(runtime, null);
     this.mirror.updateSessionStatus(sessionId, "needs_user_input");
 
     const lines = ["Reply required:"];
@@ -1565,6 +1647,9 @@ export class TelegramConductorBridge {
     switch (notification.method) {
       case "turn/started":
         await this.onTurnStarted(notification.params);
+        return;
+      case "item/started":
+        await this.onItemStarted(notification.params);
         return;
       case "item/agentMessage/delta":
         await this.onAgentMessageDelta(notification.params);
@@ -1605,7 +1690,28 @@ export class TelegramConductorBridge {
     const session = this.registry.getSessionById(sessionId);
     const runtime = this.ensureRuntime(sessionId, threadId, turnId, session?.model ?? null);
     runtime.status = "active";
+    this.recordRuntimeEvent(runtime, "Turn started. Waiting for the first update...");
     this.mirror.updateSessionStatus(sessionId, "working");
+    await this.pushRuntimeUpdate(runtime);
+  }
+
+  private async onItemStarted(params: Record<string, unknown>): Promise<void> {
+    const threadId = asString(params.threadId);
+    const turnId = asString(params.turnId);
+    const item = asRecord(params.item);
+    if (!threadId || !turnId || !item) {
+      return;
+    }
+
+    const sessionId = this.resolveSessionIdByThreadId(threadId);
+    if (!sessionId) {
+      return;
+    }
+
+    const session = this.registry.getSessionById(sessionId);
+    const runtime = this.ensureRuntime(sessionId, threadId, turnId, session?.model ?? null);
+    runtime.status = "active";
+    this.recordRuntimeEvent(runtime, describeRuntimeActivity(item, "started"));
     await this.pushRuntimeUpdate(runtime);
   }
 
@@ -1626,6 +1732,7 @@ export class TelegramConductorBridge {
     const runtime = this.ensureRuntime(sessionId, threadId, turnId, session?.model ?? null);
     runtime.assistantText += delta;
     runtime.status = "active";
+    this.recordRuntimeEvent(runtime, "Composing reply...");
     await this.pushRuntimeUpdate(runtime);
   }
 
@@ -1652,6 +1759,7 @@ export class TelegramConductorBridge {
         return;
       }
       runtime.assistantText = text;
+      this.recordRuntimeEvent(runtime, null);
       this.mirror.appendAssistantMessage({
         sessionId,
         threadId,
@@ -1668,9 +1776,14 @@ export class TelegramConductorBridge {
       const text = asString(item.text);
       if (text) {
         runtime.planText = text;
+        this.recordRuntimeEvent(runtime, "Plan ready for review.");
         await this.pushRuntimeUpdate(runtime, text, planKeyboard());
       }
+      return;
     }
+
+    this.recordRuntimeEvent(runtime, describeRuntimeActivity(item, "completed"));
+    await this.pushRuntimeUpdate(runtime);
   }
 
   private async onPlanUpdated(params: Record<string, unknown>): Promise<void> {
@@ -1707,6 +1820,7 @@ export class TelegramConductorBridge {
     const runtime = this.ensureRuntime(sessionId, threadId, turnId, session?.model ?? null);
     runtime.status = "waiting_plan";
     runtime.planText = formatPlan(plan, explanation);
+    this.recordRuntimeEvent(runtime, null);
     this.mirror.updateSessionStatus(sessionId, "needs_plan_response");
     await this.pushRuntimeUpdate(runtime, runtime.planText, planKeyboard());
   }
@@ -1721,6 +1835,8 @@ export class TelegramConductorBridge {
       const runtime = this.runtimes.get(sessionId);
       if (runtime) {
         runtime.status = "active";
+        this.recordRuntimeEvent(runtime, "Resumed after your reply.");
+        await this.pushRuntimeUpdate(runtime);
       }
       this.mirror.updateSessionStatus(sessionId, "working");
       break;
@@ -1747,6 +1863,7 @@ export class TelegramConductorBridge {
 
     if (turnStatus === "failed") {
       runtime.status = "failed";
+      this.recordRuntimeEvent(runtime, null);
       if (!runtime.assistantText) {
         runtime.assistantText = extractHumanText(error) || "Execution failed.";
       }
@@ -1754,6 +1871,7 @@ export class TelegramConductorBridge {
       await this.pushRuntimeUpdate(runtime);
     } else {
       runtime.status = "completed";
+      this.recordRuntimeEvent(runtime, null);
       this.mirror.updateSessionStatus(sessionId, "idle");
       await this.pushRuntimeUpdate(runtime);
     }
@@ -1783,6 +1901,7 @@ export class TelegramConductorBridge {
     const runtime = this.runtimes.get(sessionId);
     if (runtime) {
       runtime.status = "failed";
+      this.recordRuntimeEvent(runtime, null);
       runtime.assistantText = "The underlying thread entered systemError.";
       await this.pushRuntimeUpdate(runtime);
     }
@@ -1795,16 +1914,25 @@ export class TelegramConductorBridge {
     }
 
     const runtime: RuntimeState = {
+      activityText: existing?.activityText ?? null,
       sessionId,
       threadId,
       turnId,
       status: "active",
       assistantText: existing?.assistantText ?? "",
+      lastEventAt: existing?.lastEventAt ?? null,
       planText: existing?.planText ?? null,
       model,
     };
     this.runtimes.set(sessionId, runtime);
     return runtime;
+  }
+
+  private recordRuntimeEvent(runtime: RuntimeState, activityText?: string | null): void {
+    runtime.lastEventAt = new Date().toISOString();
+    if (activityText !== undefined) {
+      runtime.activityText = activityText;
+    }
   }
 
   private resolveSessionIdByThreadId(threadId: string): string | null {
@@ -1846,14 +1974,21 @@ export class TelegramConductorBridge {
     bodyOverride: string | undefined,
     activePlaceholder: string | null,
   ): string | null {
+    const activityBlock = this.resolveRuntimeActivityBlock(runtime);
     if (bodyOverride !== undefined) {
-      return bodyOverride;
+      if (!activityBlock) {
+        return bodyOverride;
+      }
+      return bodyOverride ? `${activityBlock}\n\n${bodyOverride}` : activityBlock;
     }
     if (runtime.planText) {
-      return runtime.planText;
+      return activityBlock ? `${activityBlock}\n\n${runtime.planText}` : runtime.planText;
     }
     if (runtime.assistantText) {
-      return runtime.assistantText;
+      if (!activityBlock) {
+        return runtime.assistantText;
+      }
+      return `${activityBlock}\n\nLatest assistant text:\n${runtime.assistantText}`;
     }
     if (runtime.status === "waiting_user_input") {
       return "Waiting for your reply.";
@@ -1862,9 +1997,25 @@ export class TelegramConductorBridge {
       return "Waiting for your plan approval.";
     }
     if (runtime.status === "cancelling") {
-      return "Interrupt requested...";
+      return activityBlock ? `${activityBlock}\n\nInterrupt requested...` : "Interrupt requested...";
+    }
+    if (activityBlock) {
+      return activityBlock;
     }
     return activePlaceholder;
+  }
+
+  private resolveRuntimeActivityBlock(runtime: RuntimeState): string | null {
+    if (!runtime.activityText) {
+      return null;
+    }
+
+    const lines = [`Current activity: ${runtime.activityText}`];
+    const lastEventAt = formatRuntimeEventAt(runtime.lastEventAt);
+    if (lastEventAt) {
+      lines.push(`Last event: ${lastEventAt}`);
+    }
+    return lines.join("\n");
   }
 
   private async pushRuntimeUpdate(
@@ -2104,6 +2255,12 @@ export class TelegramConductorBridge {
     ];
     if (runtime?.turnId) {
       lines.push(`Turn: ${runtime.turnId}`);
+    }
+    if (runtime?.activityText) {
+      lines.push(`Activity: ${truncate(runtime.activityText, 120)}`);
+    }
+    if (runtime?.lastEventAt) {
+      lines.push(`Last Event: ${formatRuntimeEventAt(runtime.lastEventAt)}`);
     }
     if (location.messageThreadId !== null) {
       lines.push(`Topic: ${location.messageThreadId}`);
