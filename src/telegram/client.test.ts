@@ -147,4 +147,42 @@ describe("TelegramClient", () => {
     await expect(messagePromise).resolves.toBe(100);
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("ignores expired callback query errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        telegramErrorResponse(400, {
+          ok: false,
+          error_code: 400,
+          description: "Bad Request: query is too old and response timeout expired or query ID is invalid",
+        }),
+      ),
+    );
+
+    const client = new TelegramClient("token");
+
+    await expect(client.answerCallbackQuery("callback-1")).resolves.toBeUndefined();
+  });
+
+  it("still throws unrelated answerCallbackQuery errors", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        telegramErrorResponse(400, {
+          ok: false,
+          error_code: 400,
+          description: "Bad Request: BUTTON_DATA_INVALID",
+        }),
+      ),
+    );
+
+    const client = new TelegramClient("token");
+
+    await expect(client.answerCallbackQuery("callback-1")).rejects.toMatchObject({
+      method: "answerCallbackQuery",
+      status: 400,
+      description: "Bad Request: BUTTON_DATA_INVALID",
+    });
+  });
 });

@@ -183,6 +183,19 @@ export function summarizeTelegramError(error: unknown): { code: string | null; m
 
 export const summarizeTelegramNetworkError = summarizeTelegramError;
 
+function isExpiredCallbackQueryDescription(description: string | null): boolean {
+  const normalized = description?.toLowerCase() ?? "";
+  return normalized.includes("query is too old") || normalized.includes("response timeout expired");
+}
+
+function isExpiredCallbackQueryError(error: unknown): boolean {
+  return (
+    error instanceof TelegramApiError &&
+    error.method === "answerCallbackQuery" &&
+    isExpiredCallbackQueryDescription(error.description)
+  );
+}
+
 async function readTelegramApiError(
   response: Response,
 ): Promise<{ description: string | null; retryAfterSeconds: number | null; status: number | null }> {
@@ -295,11 +308,18 @@ export class TelegramClient {
   }
 
   async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
-    await this.callApi("answerCallbackQuery", {
-      callback_query_id: callbackQueryId,
-      text,
-      show_alert: false,
-    });
+    try {
+      await this.callApi("answerCallbackQuery", {
+        callback_query_id: callbackQueryId,
+        text,
+        show_alert: false,
+      });
+    } catch (error) {
+      if (isExpiredCallbackQueryError(error)) {
+        return;
+      }
+      throw error;
+    }
   }
 
   private async callApi<T>(
