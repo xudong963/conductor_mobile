@@ -4,7 +4,7 @@ import { CodexAppServerAdapter } from "../adapters/codex-app-server.js";
 import { ConductorMirrorWriter } from "../adapters/conductor-mirror.js";
 import { ConductorRegistryAdapter } from "../adapters/conductor-registry.js";
 import { BridgeStateStore } from "../bridge/state-store.js";
-import { TelegramClient } from "../telegram/client.js";
+import { isTransientTelegramNetworkError, summarizeTelegramNetworkError, TelegramClient } from "../telegram/client.js";
 import {
   homeKeyboard,
   inboxKeyboard,
@@ -26,6 +26,7 @@ import type {
 import {
   extractHumanText,
   formatPlan,
+  formatSessionPickerText,
   formatStatusLine,
   formatWorkspaceLabel,
   sanitizeSessionTitle,
@@ -103,7 +104,11 @@ export class TelegramBridgeService {
           this.stateStore.setTelegramCursor(update.update_id);
         }
       } catch (error) {
-        logger.error("poll loop failed", error);
+        if (isTransientTelegramNetworkError(error)) {
+          logger.warn("telegram polling interrupted; retrying", summarizeTelegramNetworkError(error));
+        } else {
+          logger.error("poll loop failed", error);
+        }
         await delay(1500);
       }
     }
@@ -429,9 +434,16 @@ export class TelegramBridgeService {
       await this.telegram.sendMessage(chatId, "当前 workspace 没有 session。");
       return;
     }
-    await this.telegram.sendMessage(chatId, "选择 session", {
-      reply_markup: { inline_keyboard: sessionsKeyboard(sessions) },
-    });
+    await this.telegram.sendMessage(
+      chatId,
+      formatSessionPickerText(sessions, {
+        activeSessionId: ctx.activeSessionId,
+        heading: "选择 session",
+      }),
+      {
+        reply_markup: { inline_keyboard: sessionsKeyboard(sessions) },
+      },
+    );
   }
 
   private async showInbox(chatId: number): Promise<void> {
