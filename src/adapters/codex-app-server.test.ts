@@ -7,7 +7,9 @@ describe("CodexAppServerAdapter.resumeThread", () => {
     const adapter = new CodexAppServerAdapter("/tmp/codex");
     const request = vi
       .fn()
-      .mockRejectedValue(new Error('thread/resume: {"code":-32600,"message":"no rollout found for thread id thread-1"}'));
+      .mockRejectedValue(
+        new Error('thread/resume: {"code":-32600,"message":"no rollout found for thread id thread-1"}'),
+      );
 
     (adapter as unknown as { request: typeof request }).request = request;
 
