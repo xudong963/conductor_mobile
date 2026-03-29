@@ -59,7 +59,7 @@ function createRegistryFixture(): {
   });
 
   const cleanup = () => {
-    ((adapter as unknown) as { db: { close: () => void } }).db.close();
+    (adapter as unknown as { db: { close: () => void } }).db.close();
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   };
@@ -218,8 +218,14 @@ describe("ConductorRegistryAdapter", () => {
     runGit(["switch", "master"], sourceRepoPath);
 
     runGit(["worktree", "add", "--detach", path.join(repoWorkspaceRoot, "master-workspace"), "master"], sourceRepoPath);
-    runGit(["worktree", "add", path.join(repoWorkspaceRoot, "merged-workspace"), "xudong963/merged-branch"], sourceRepoPath);
-    runGit(["worktree", "add", path.join(repoWorkspaceRoot, "open-workspace"), "xudong963/open-branch"], sourceRepoPath);
+    runGit(
+      ["worktree", "add", path.join(repoWorkspaceRoot, "merged-workspace"), "xudong963/merged-branch"],
+      sourceRepoPath,
+    );
+    runGit(
+      ["worktree", "add", path.join(repoWorkspaceRoot, "open-workspace"), "xudong963/open-branch"],
+      sourceRepoPath,
+    );
 
     db.prepare(`INSERT INTO repos (id, name, root_path, default_branch, hidden) VALUES (?, ?, ?, ?, ?);`).run(
       "repo-1",
