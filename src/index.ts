@@ -30,6 +30,7 @@ import {
   formatBranchPickerText,
   formatPlan,
   formatRepositoryLabel,
+  formatSessionContextEntry,
   formatSessionPickerText,
   formatSessionTitle,
   formatStatusLine,
@@ -416,6 +417,9 @@ class TelegramConductorBridge {
       case "/queue":
         await this.showQueue(chatId);
         return;
+      case "/context":
+        await this.showContext(chatId, rawCommand);
+        return;
       case "/new": {
         const context = this.stateStore.getChatContext(chatId);
         if (!context.activeWorkspaceId) {
@@ -441,6 +445,7 @@ class TelegramConductorBridge {
             "/sessions",
             "/status",
             "/queue",
+            "/context [N]",
             "/new",
             "/help",
             "",
@@ -707,6 +712,38 @@ class TelegramConductorBridge {
       lines.push(`${item.status} · ${item.text.slice(0, 80)}`);
     }
     await this.safeSendMessage(chatId, lines.join("\n"));
+  }
+
+  private async showContext(chatId: number, rawCommand: string): Promise<void> {
+    const session = this.resolveSelectedSession(chatId);
+    if (!session) {
+      await this.safeSendMessage(chatId, "先选一个 chat。");
+      return;
+    }
+
+    const limit = this.parseContextLimit(rawCommand);
+    if (limit === null) {
+      await this.safeSendMessage(chatId, "用法：/context 或 /context 12");
+      return;
+    }
+
+    const rawLimit = Math.min(limit * 8, 160);
+    const entries = this.registry
+      .listSessionMessages(session.id, rawLimit)
+      .map((message) => formatSessionContextEntry(message))
+      .filter((message): message is string => Boolean(message))
+      .slice(0, limit)
+      .reverse();
+
+    if (entries.length === 0) {
+      await this.safeSendMessage(chatId, "当前 chat 暂无可显示的 context。");
+      return;
+    }
+
+    await this.sendTextSections(chatId, [
+      `Context: ${formatSessionTitle(session.title)}\nShowing latest ${entries.length} messages`,
+      ...entries,
+    ]);
   }
 
   private shouldQueueSession(session: ConductorSessionRef): boolean {
@@ -1480,6 +1517,70 @@ class TelegramConductorBridge {
       truncate(text, 3800),
       keyboard ? { reply_markup: { inline_keyboard: keyboard } } : undefined,
     );
+  }
+
+  private parseContextLimit(rawCommand: string): number | null {
+    const parts = rawCommand.trim().split(/\s+/).slice(1);
+    if (parts.length === 0) {
+      return 8;
+    }
+    if (parts.length !== 1) {
+      return null;
+    }
+
+    const limit = Number.parseInt(parts[0] ?? "", 10);
+    if (!Number.isInteger(limit) || limit <= 0) {
+      return null;
+    }
+
+    return Math.min(limit, 20);
+  }
+
+  private async sendTextSections(chatId: number, sections: string[]): Promise<void> {
+    let current = "";
+    for (const section of sections) {
+      for (const piece of this.splitTextForTelegram(section)) {
+        const next = current ? `${current}\n\n${piece}` : piece;
+        if (next.length <= 3800) {
+          current = next;
+          continue;
+        }
+
+        if (current) {
+          await this.safeSendMessage(chatId, current);
+        }
+        current = piece;
+      }
+    }
+
+    if (current) {
+      await this.safeSendMessage(chatId, current);
+    }
+  }
+
+  private splitTextForTelegram(text: string, maxLength = 3800): string[] {
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return [];
+    }
+    if (trimmed.length <= maxLength) {
+      return [trimmed];
+    }
+
+    const chunks: string[] = [];
+    let remaining = trimmed;
+    while (remaining.length > maxLength) {
+      const splitAt = Math.max(remaining.lastIndexOf("\n\n", maxLength), remaining.lastIndexOf("\n", maxLength));
+      const boundary = splitAt >= Math.floor(maxLength / 2) ? splitAt : maxLength;
+      chunks.push(remaining.slice(0, boundary).trimEnd());
+      remaining = remaining.slice(boundary).trimStart();
+    }
+
+    if (remaining) {
+      chunks.push(remaining);
+    }
+
+    return chunks;
   }
 }
 

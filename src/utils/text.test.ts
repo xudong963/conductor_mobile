@@ -7,6 +7,7 @@ import {
   formatPlan,
   formatRepositoryLabel,
   formatSessionButtonLabel,
+  formatSessionContextEntry,
   formatSessionPickerText,
   formatSessionStatus,
   formatStatusLine,
@@ -175,5 +176,80 @@ describe("formatPlan", () => {
   it("includes explanation when provided", () => {
     const result = formatPlan([{ step: "s", status: "pending" }], "Why this plan");
     expect(result).toMatch(/^Why this plan/);
+  });
+});
+
+describe("formatSessionContextEntry", () => {
+  it("formats raw user messages", () => {
+    const result = formatSessionContextEntry({
+      role: "user",
+      content: "hello world",
+      sentAt: "2026-03-29T10:23:00.000Z",
+      turnId: null,
+      model: null,
+    });
+
+    expect(result).toContain("[User");
+    expect(result).toContain("hello world");
+  });
+
+  it("formats structured assistant text", () => {
+    const result = formatSessionContextEntry({
+      role: "assistant",
+      content: JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "working on it" }],
+        },
+      }),
+      sentAt: "2026-03-29T10:24:00.000Z",
+      turnId: "turn-1",
+      model: "gpt-5",
+    });
+
+    expect(result).toContain("[Assistant");
+    expect(result).toContain("working on it");
+  });
+
+  it("formats tool calls and tool results", () => {
+    const toolUse = formatSessionContextEntry({
+      role: "assistant",
+      content: JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", name: "Bash", input: { command: "git status" } }],
+        },
+      }),
+      sentAt: null,
+      turnId: "turn-1",
+      model: "gpt-5",
+    });
+    const toolResult = formatSessionContextEntry({
+      role: "assistant",
+      content: JSON.stringify({
+        type: "user",
+        message: {
+          content: [{ type: "tool_result", content: "clean", is_error: false }],
+        },
+      }),
+      sentAt: null,
+      turnId: "turn-1",
+      model: "gpt-5",
+    });
+
+    expect(toolUse).toContain("[Tool Bash] git status");
+    expect(toolResult).toContain("[Tool result] clean");
+  });
+
+  it("skips internal system records", () => {
+    const result = formatSessionContextEntry({
+      role: "assistant",
+      content: JSON.stringify({ type: "system" }),
+      sentAt: null,
+      turnId: null,
+      model: null,
+    });
+
+    expect(result).toBeNull();
   });
 });

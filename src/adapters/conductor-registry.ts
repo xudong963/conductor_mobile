@@ -6,6 +6,7 @@ import type {
   ConductorSessionRef,
   RepositoryRef,
   SessionDefaults,
+  SessionMessageRecord,
   SessionSeed,
   SessionStatus,
   WorkspaceRef,
@@ -401,5 +402,25 @@ export class ConductorRegistryAdapter {
         params.sentAt,
       );
     return messageId;
+  }
+
+  listSessionMessages(sessionId: string, limit: number): SessionMessageRecord[] {
+    return this.db
+      .prepare(
+        `
+          SELECT
+            role,
+            content,
+            sent_at as sentAt,
+            turn_id as turnId,
+            model
+          FROM session_messages
+          WHERE session_id = ?
+            AND cancelled_at IS NULL
+          ORDER BY COALESCE(sent_at, created_at) DESC
+          LIMIT ?
+        `,
+      )
+      .all(sessionId, limit) as SessionMessageRecord[];
   }
 }

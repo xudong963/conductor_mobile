@@ -35,6 +35,14 @@ export interface ConductorSessionRef {
   lastUserMessageAt: string | null;
 }
 
+export interface SessionMessageRecord {
+  role: "user" | "assistant";
+  content: string;
+  sentAt: string | null;
+  turnId: string | null;
+  model: string | null;
+}
+
 export interface ChatContext {
   chatId: number;
   activeWorkspaceId: string | null;
