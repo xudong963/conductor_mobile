@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import Database from "better-sqlite3";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -33,6 +34,11 @@ interface DbWorkspacePriorityRow extends WorkspaceRef {
   hasLocalUserMessages: number;
   state: string | null;
   defaultBranch: string;
+}
+
+interface DbRepositoryRow extends RepositoryRef {
+  defaultBranch: string | null;
+  remote: string | null;
 }
 
 export class ConductorRegistryAdapter {
@@ -91,16 +97,39 @@ export class ConductorRegistryAdapter {
             r.id,
             r.name as repositoryName,
             r.root_path as rootPath,
-            MAX(w.updated_at) as updatedAt
+            MAX(w.updated_at) as updatedAt,
+            r.default_branch as defaultBranch,
+            r.remote as remote
           FROM workspaces w
           JOIN repos r ON r.id = w.repository_id
           WHERE IFNULL(r.hidden, 0) = 0
-          GROUP BY r.id, r.name, r.root_path
+          GROUP BY r.id, r.name, r.root_path, r.default_branch, r.remote
           ORDER BY MAX(w.updated_at) DESC
           LIMIT ?
         `,
       )
       .all(limit) as RepositoryRef[];
+  }
+
+  getRepositoryById(repositoryId: string): RepositoryRef | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            id,
+            name as repositoryName,
+            root_path as rootPath,
+            updated_at as updatedAt,
+            default_branch as defaultBranch,
+            remote as remote
+          FROM repos
+          WHERE id = ?
+            AND IFNULL(hidden, 0) = 0
+          LIMIT 1
+        `,
+      )
+      .get(repositoryId) as DbRepositoryRow | undefined;
+    return row ?? null;
   }
 
   getWorkspaceById(workspaceId: string): WorkspaceRef | null {
@@ -126,6 +155,33 @@ export class ConductorRegistryAdapter {
         `,
       )
       .get(workspaceId) as WorkspaceRef | undefined;
+    return row ?? null;
+  }
+
+  findWorkspaceByBranch(repositoryId: string, branchName: string): WorkspaceRef | null {
+    const row = this.db
+      .prepare(
+        `
+          SELECT
+            w.id,
+            w.directory_name as directoryName,
+            w.branch as branch,
+            w.pr_title as prTitle,
+            s.title as activeSessionTitle,
+            w.repository_id as repositoryId,
+            w.active_session_id as activeSessionId,
+            w.updated_at as updatedAt,
+            r.root_path as rootPath,
+            r.name as repositoryName
+          FROM workspaces w
+          JOIN repos r ON r.id = w.repository_id
+          LEFT JOIN sessions s ON s.id = w.active_session_id
+          WHERE w.repository_id = ?
+            AND w.branch = ?
+          LIMIT 1
+        `,
+      )
+      .get(repositoryId, branchName.trim()) as WorkspaceRef | undefined;
     return row ?? null;
   }
 
@@ -486,6 +542,214 @@ export class ConductorRegistryAdapter {
       throw new Error(`Failed to read back created session ${sessionId}.`);
     }
     return created;
+  }
+
+  createWorkspace(repositoryId: string, branchName: string): WorkspaceRef {
+    const repository = this.getRepositoryById(repositoryId);
+    if (!repository) {
+      throw new Error("Repository not found.");
+    }
+
+    const normalizedBranch = branchName.trim();
+    if (!normalizedBranch) {
+      throw new Error("Branch name is required.");
+    }
+
+    this.assertValidBranchName(repository.rootPath, normalizedBranch);
+
+    const existingWorkspace = this.findWorkspaceByBranch(repositoryId, normalizedBranch);
+    if (existingWorkspace) {
+      return existingWorkspace;
+    }
+
+    const directoryName = this.allocateWorkspaceDirectoryName(
+      repositoryId,
+      repository.repositoryName,
+      normalizedBranch,
+    );
+    const workspacePath = path.join(this.workspacesRoot, repository.repositoryName, directoryName);
+    const branchExistsLocally = this.refExists(repository.rootPath, `refs/heads/${normalizedBranch}`);
+    const branchStartPoint = branchExistsLocally
+      ? normalizedBranch
+      : (this.findRemoteBranchRef(repository.rootPath, normalizedBranch, repository.remote) ??
+        this.resolveBaseBranchRef(repository.rootPath, repository.defaultBranch, repository.remote));
+
+    let worktreeCreated = false;
+    try {
+      fs.mkdirSync(path.dirname(workspacePath), { recursive: true });
+      execFileSync(
+        "git",
+        branchExistsLocally
+          ? ["-C", repository.rootPath, "worktree", "add", workspacePath, normalizedBranch]
+          : ["-C", repository.rootPath, "worktree", "add", "-b", normalizedBranch, workspacePath, branchStartPoint],
+        { stdio: "ignore" },
+      );
+      worktreeCreated = true;
+
+      const workspaceId = randomUUID();
+      this.db
+        .prepare(
+          `
+            INSERT INTO workspaces (
+              id,
+              repository_id,
+              directory_name,
+              active_session_id,
+              branch,
+              placeholder_branch_name,
+              state,
+              initialization_parent_branch,
+              created_at,
+              updated_at
+            )
+            VALUES (?, ?, ?, NULL, ?, ?, 'ready', ?, datetime('now'), datetime('now'))
+          `,
+        )
+        .run(
+          workspaceId,
+          repositoryId,
+          directoryName,
+          normalizedBranch,
+          normalizedBranch,
+          repository.defaultBranch?.trim() || "master",
+        );
+
+      const created = this.getWorkspaceById(workspaceId);
+      if (!created) {
+        throw new Error(`Failed to read back created workspace ${workspaceId}.`);
+      }
+      return created;
+    } catch (error) {
+      if (worktreeCreated) {
+        this.removeWorktree(repository.rootPath, workspacePath);
+      } else {
+        fs.rmSync(workspacePath, { recursive: true, force: true });
+      }
+      throw error;
+    }
+  }
+
+  private assertValidBranchName(rootPath: string, branchName: string): void {
+    try {
+      execFileSync("git", ["-C", rootPath, "check-ref-format", "--branch", branchName], { stdio: "ignore" });
+    } catch {
+      throw new Error(`Invalid branch name: ${branchName}`);
+    }
+  }
+
+  private refExists(rootPath: string, refName: string): boolean {
+    try {
+      execFileSync("git", ["-C", rootPath, "rev-parse", "--verify", "--quiet", refName], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private findRemoteBranchRef(
+    rootPath: string,
+    branchName: string,
+    preferredRemote: string | null | undefined,
+  ): string | null {
+    let output: string;
+    try {
+      output = execFileSync("git", ["-C", rootPath, "for-each-ref", "--format=%(refname:short)", "refs/remotes"], {
+        encoding: "utf8",
+      });
+    } catch {
+      return null;
+    }
+
+    const suffix = `/${branchName}`;
+    const refs = output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line && line !== "origin/HEAD")
+      .filter((line) => line.endsWith(suffix))
+      .sort((left, right) => {
+        const preferred = preferredRemote?.trim();
+        const preferredRef = preferred ? `${preferred}/${branchName}` : null;
+        const rank = (value: string): number => {
+          if (preferredRef && value === preferredRef) {
+            return 0;
+          }
+          if (value === `origin/${branchName}`) {
+            return 1;
+          }
+          return 2;
+        };
+        return rank(left) - rank(right) || left.localeCompare(right);
+      });
+
+    return refs[0] ?? null;
+  }
+
+  private resolveBaseBranchRef(
+    rootPath: string,
+    defaultBranch: string | null | undefined,
+    preferredRemote: string | null | undefined,
+  ): string {
+    const normalizedDefaultBranch = defaultBranch?.trim() || "master";
+    if (this.refExists(rootPath, `refs/heads/${normalizedDefaultBranch}`)) {
+      return normalizedDefaultBranch;
+    }
+
+    const remoteRef = this.findRemoteBranchRef(rootPath, normalizedDefaultBranch, preferredRemote);
+    if (remoteRef) {
+      return remoteRef;
+    }
+
+    throw new Error(`Base branch not found: ${normalizedDefaultBranch}`);
+  }
+
+  private allocateWorkspaceDirectoryName(repositoryId: string, repositoryName: string, branchName: string): string {
+    const repositoryRoot = path.join(this.workspacesRoot, repositoryName);
+    const existingRows = this.db
+      .prepare(
+        `
+          SELECT directory_name as directoryName
+          FROM workspaces
+          WHERE repository_id = ?
+        `,
+      )
+      .all(repositoryId) as Array<{ directoryName: string }>;
+    const existingNames = new Set(existingRows.map((row) => row.directoryName.toLowerCase()));
+    const baseName = this.slugWorkspaceDirectory(branchName);
+
+    const firstPath = path.join(repositoryRoot, baseName);
+    if (!existingNames.has(baseName.toLowerCase()) && !fs.existsSync(firstPath)) {
+      return baseName;
+    }
+
+    for (let index = 1; index < 1000; index += 1) {
+      const candidate = `${baseName}-v${index}`;
+      if (existingNames.has(candidate.toLowerCase())) {
+        continue;
+      }
+      if (!fs.existsSync(path.join(repositoryRoot, candidate))) {
+        return candidate;
+      }
+    }
+
+    throw new Error(`Could not allocate a workspace directory for ${branchName}`);
+  }
+
+  private slugWorkspaceDirectory(branchName: string): string {
+    const tail = branchName.split("/").at(-1) ?? branchName;
+    const slug = tail
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return slug || "workspace";
+  }
+
+  private removeWorktree(rootPath: string, workspacePath: string): void {
+    try {
+      execFileSync("git", ["-C", rootPath, "worktree", "remove", "--force", workspacePath], { stdio: "ignore" });
+    } catch {
+      fs.rmSync(workspacePath, { recursive: true, force: true });
+    }
   }
 
   appendSessionMessage(params: {

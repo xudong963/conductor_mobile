@@ -1,4 +1,4 @@
-export type ComposeMode = "none" | "new_session" | "plan_feedback" | "reply_required";
+export type ComposeMode = "none" | "new_session" | "new_workspace" | "plan_feedback" | "reply_required";
 
 export type QueueKind = "normal" | "new_session";
 
@@ -9,6 +9,8 @@ export interface RepositoryRef {
   repositoryName: string;
   rootPath: string;
   updatedAt: string;
+  defaultBranch?: string | null;
+  remote?: string | null;
 }
 
 export interface WorkspaceRef {

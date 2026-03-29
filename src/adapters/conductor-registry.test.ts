@@ -27,6 +27,8 @@ function createRegistryFixture(): {
       name TEXT,
       root_path TEXT,
       default_branch TEXT,
+      updated_at TEXT,
+      remote TEXT,
       hidden INTEGER DEFAULT 0
     );
 
@@ -44,9 +46,12 @@ function createRegistryFixture(): {
       repository_id TEXT,
       directory_name TEXT,
       branch TEXT,
+      placeholder_branch_name TEXT,
+      initialization_parent_branch TEXT,
       pr_title TEXT,
       archive_commit TEXT,
       active_session_id TEXT,
+      created_at TEXT,
       updated_at TEXT NOT NULL,
       state TEXT
     );
@@ -94,20 +99,12 @@ describe("ConductorRegistryAdapter", () => {
     runGit(["add", "README.md"], repositoryRoot);
     runGit(["commit", "-m", "initial"], repositoryRoot);
 
-    db.prepare(`INSERT INTO repos (id, name, root_path, default_branch, hidden) VALUES (?, ?, ?, ?, ?);`).run(
-      "repo-1",
-      "telegram-bridge",
-      repositoryRoot,
-      "master",
-      0,
-    );
-    db.prepare(`INSERT INTO repos (id, name, root_path, default_branch, hidden) VALUES (?, ?, ?, ?, ?);`).run(
-      "repo-2",
-      "other-repo",
-      "/repos/other-repo",
-      "master",
-      0,
-    );
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", "telegram-bridge", repositoryRoot, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-2", "other-repo", "/repos/other-repo", "master", "2026-03-29T05:00:00.000Z", "origin", 0);
 
     const insertWorkspace = db.prepare(`
       INSERT INTO workspaces (
@@ -227,13 +224,9 @@ describe("ConductorRegistryAdapter", () => {
       sourceRepoPath,
     );
 
-    db.prepare(`INSERT INTO repos (id, name, root_path, default_branch, hidden) VALUES (?, ?, ?, ?, ?);`).run(
-      "repo-1",
-      repositoryName,
-      sourceRepoPath,
-      "master",
-      0,
-    );
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", repositoryName, sourceRepoPath, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
 
     const insertWorkspace = db.prepare(`
       INSERT INTO workspaces (
@@ -286,5 +279,102 @@ describe("ConductorRegistryAdapter", () => {
     const workspaces = adapter.listWorkspacesForRepository("repo-1", 10);
 
     expect(workspaces.map((workspace) => workspace.id)).toEqual(["workspace-open", "workspace-master"]);
+  });
+
+  it("creates a new workspace worktree and persists the workspace record", () => {
+    const { adapter, db, tempDir } = createRegistryFixture();
+    const repositoryName = "telegram-bridge";
+    const sourceRepoPath = path.join(tempDir, "source-repo");
+
+    fs.mkdirSync(sourceRepoPath, { recursive: true });
+    runGit(["init", "--initial-branch=master"], sourceRepoPath);
+    runGit(["config", "user.name", "Test User"], sourceRepoPath);
+    runGit(["config", "user.email", "test@example.com"], sourceRepoPath);
+
+    fs.writeFileSync(path.join(sourceRepoPath, "README.md"), "initial\n", "utf8");
+    runGit(["add", "README.md"], sourceRepoPath);
+    runGit(["commit", "-m", "initial"], sourceRepoPath);
+
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", repositoryName, sourceRepoPath, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
+
+    const workspace = adapter.createWorkspace("repo-1", "xudong963/berlin");
+
+    expect(workspace.branch).toBe("xudong963/berlin");
+    expect(workspace.directoryName).toBe("berlin");
+    expect(fs.existsSync(path.join(tempDir, "workspaces", repositoryName, "berlin", ".git"))).toBeTruthy();
+
+    const row = db
+      .prepare(
+        `
+          SELECT
+            branch,
+            directory_name as directoryName,
+            placeholder_branch_name as placeholderBranchName,
+            state,
+            initialization_parent_branch as initializationParentBranch
+          FROM workspaces
+          WHERE id = ?
+        `,
+      )
+      .get(workspace.id) as
+      | {
+          branch: string;
+          directoryName: string;
+          placeholderBranchName: string;
+          state: string;
+          initializationParentBranch: string;
+        }
+      | undefined;
+
+    expect(row).toEqual({
+      branch: "xudong963/berlin",
+      directoryName: "berlin",
+      placeholderBranchName: "xudong963/berlin",
+      state: "ready",
+      initializationParentBranch: "master",
+    });
+  });
+
+  it("allocates a versioned directory name when the branch tail is already taken", () => {
+    const { adapter, db, tempDir } = createRegistryFixture();
+    const repositoryName = "telegram-bridge";
+    const sourceRepoPath = path.join(tempDir, "source-repo");
+
+    fs.mkdirSync(sourceRepoPath, { recursive: true });
+    runGit(["init", "--initial-branch=master"], sourceRepoPath);
+    runGit(["config", "user.name", "Test User"], sourceRepoPath);
+    runGit(["config", "user.email", "test@example.com"], sourceRepoPath);
+
+    fs.writeFileSync(path.join(sourceRepoPath, "README.md"), "initial\n", "utf8");
+    runGit(["add", "README.md"], sourceRepoPath);
+    runGit(["commit", "-m", "initial"], sourceRepoPath);
+
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", repositoryName, sourceRepoPath, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
+    db.prepare(
+      `
+        INSERT INTO workspaces (
+          id,
+          repository_id,
+          directory_name,
+          branch,
+          pr_title,
+          archive_commit,
+          active_session_id,
+          updated_at,
+          state
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+    ).run("workspace-1", "repo-1", "berlin", "xudong963/berlin", null, null, null, "2026-03-29T04:00:00.000Z", "ready");
+
+    const workspace = adapter.createWorkspace("repo-1", "xudong963/berlin-followup");
+
+    expect(workspace.directoryName).toBe("berlin-followup");
+
+    const other = adapter.createWorkspace("repo-1", "demo/berlin");
+    expect(other.directoryName).toBe("berlin-v1");
   });
 });

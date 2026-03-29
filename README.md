@@ -78,6 +78,7 @@ npm run dev
 - `/queue`: inspect the current chat queue
 - `/context [N]`: open a paginated single-message context viewer with older/newer, refresh, and close controls
 - `/new`: make the next plain-text message create a new chat on the current branch
+- `/new_workspace`: make the next plain-text message create a new workspace in the current repo
 - `/help`: show help
 
 On startup the bridge calls Telegram `setMyCommands`, so these slash commands also appear in the mobile command picker.
@@ -102,6 +103,13 @@ Create a new chat:
 3. Your next message will create a new Conductor chat and switch to it automatically
 4. If the current Telegram conversation supports topics, the bridge also creates a dedicated topic for that new chat and sends follow-up updates there
 5. Existing chats reuse their previously bound topic, so one Conductor chat stays attached to one Telegram topic
+
+Create a new workspace:
+
+1. Select a repo and branch first, or open a repo's branch list
+2. Tap `New Workspace` or `New Workspace Here`, or send `/new_workspace`
+3. Send the full branch name as your next message
+4. The bridge creates a git worktree, writes the Conductor workspace row, and switches you to the new branch
 
 ## Output Model
 
