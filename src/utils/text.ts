@@ -1,5 +1,31 @@
 import type { ConductorSessionRef, RepositoryRef, SessionMessageRecord, WorkspaceRef } from "../types.js";
 
+type ContextRenderMode = "preview" | "full";
+
+interface ContextRenderLimits {
+  rawMessage: number | null;
+  structuredText: number | null;
+  toolInput: number | null;
+  toolResult: number | null;
+  fallback: number | null;
+}
+
+const PREVIEW_CONTEXT_LIMITS: ContextRenderLimits = {
+  rawMessage: 1400,
+  structuredText: 1400,
+  toolInput: 240,
+  toolResult: 900,
+  fallback: 900,
+};
+
+const FULL_CONTEXT_LIMITS: ContextRenderLimits = {
+  rawMessage: null,
+  structuredText: null,
+  toolInput: 1200,
+  toolResult: 2000,
+  fallback: null,
+};
+
 export function truncate(input: string, max = 4000): string {
   if (input.length <= max) {
     return input;
@@ -184,9 +210,67 @@ function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
+function truncateContextBlock(input: string, max: number | null): string {
+  if (max === null) {
+    return input;
+  }
+  return truncate(input, max);
+}
+
+function formatPathLocation(fragment: string): string | null {
+  const match = fragment.match(/^L(\d+)(?:C(\d+))?$/i);
+  if (!match) {
+    return null;
+  }
+  const line = match[1];
+  const column = match[2];
+  if (!line) {
+    return null;
+  }
+  return column ? `${line}:${column}` : line;
+}
+
+function formatLocalPathReference(target: string): string | null {
+  const trimmed = target.trim();
+  if (!trimmed.startsWith("/")) {
+    return null;
+  }
+
+  const [rawFilePath, rawFragment] = trimmed.split("#", 2);
+  const filePath = rawFilePath ?? "";
+  const fragment = rawFragment ?? "";
+  const segments = filePath.split("/").filter(Boolean);
+  const fileName = segments.at(-1);
+  if (!fileName) {
+    return null;
+  }
+
+  const location = formatPathLocation(fragment);
+  return location ? `${fileName}:${location}` : fileName;
+}
+
+function normalizeMarkdownLink(label: string, target: string): string {
+  const cleanLabel = label.replace(/`/g, "").trim();
+  const localReference = formatLocalPathReference(target);
+  if (localReference) {
+    if (!cleanLabel) {
+      return localReference;
+    }
+    if (cleanLabel === localReference || localReference.startsWith(`${cleanLabel}:`)) {
+      return localReference;
+    }
+    return `${cleanLabel} (${localReference})`;
+  }
+
+  return cleanLabel || target.trim();
+}
+
 function normalizeContextText(input: string): string {
   return input
     .replace(/@⟦([^⟧]+)⟧\(attachment:[^)]+\)/g, "[Attachment: $1]")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label: string, target: string) =>
+      normalizeMarkdownLink(label, target),
+    )
     .replace(/\r\n/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
@@ -205,21 +289,21 @@ function formatContextHeader(label: string, sentAt: string | null): string {
   return timestamp ? `[${label} · ${timestamp}]` : `[${label}]`;
 }
 
-function summarizeToolInput(input: unknown): string {
+function summarizeToolInput(input: unknown, maxLength: number | null): string {
   const record = asRecord(input);
   const command = asString(record?.command);
   if (command) {
-    return truncate(command, 240);
+    return truncateContextBlock(command, maxLength);
   }
 
   const summary = normalizeContextText(extractHumanText(input));
-  return summary ? truncate(summary, 240) : "";
+  return summary ? truncateContextBlock(summary, maxLength) : "";
 }
 
-function formatStructuredMessageBlocks(content: unknown): string[] {
+function formatStructuredMessageBlocks(content: unknown, limits: ContextRenderLimits): string[] {
   if (!Array.isArray(content)) {
     const fallback = normalizeContextText(extractHumanText(content));
-    return fallback ? [truncate(fallback, 1400)] : [];
+    return fallback ? [truncateContextBlock(fallback, limits.fallback)] : [];
   }
 
   const lines: string[] = [];
@@ -230,14 +314,14 @@ function formatStructuredMessageBlocks(content: unknown): string[] {
     if (blockType === "text") {
       const text = normalizeContextText(asString(record?.text) ?? "");
       if (text) {
-        lines.push(truncate(text, 1400));
+        lines.push(truncateContextBlock(text, limits.structuredText));
       }
       continue;
     }
 
     if (blockType === "tool_use") {
       const toolName = asString(record?.name) ?? "tool";
-      const inputSummary = summarizeToolInput(record?.input);
+      const inputSummary = summarizeToolInput(record?.input, limits.toolInput);
       lines.push(inputSummary ? `[Tool ${toolName}] ${inputSummary}` : `[Tool ${toolName}]`);
       continue;
     }
@@ -250,20 +334,26 @@ function formatStructuredMessageBlocks(content: unknown): string[] {
         }
         continue;
       }
-      lines.push(`[Tool result${record?.is_error === true ? " error" : ""}] ${truncate(result, 900)}`);
+      lines.push(
+        `[Tool result${record?.is_error === true ? " error" : ""}] ${truncateContextBlock(result, limits.toolResult)}`,
+      );
       continue;
     }
 
     const fallback = normalizeContextText(extractHumanText(item));
     if (fallback) {
-      lines.push(truncate(fallback, 900));
+      lines.push(truncateContextBlock(fallback, limits.fallback));
     }
   }
 
   return lines;
 }
 
-export function formatSessionContextEntry(message: SessionMessageRecord): string | null {
+export function formatSessionContextEntry(
+  message: SessionMessageRecord,
+  mode: ContextRenderMode = "preview",
+): string | null {
+  const limits = mode === "full" ? FULL_CONTEXT_LIMITS : PREVIEW_CONTEXT_LIMITS;
   const fallbackLabel = message.role === "user" ? "User" : "Assistant";
   const rawText = normalizeContextText(message.content);
   if (!rawText) {
@@ -281,12 +371,15 @@ export function formatSessionContextEntry(message: SessionMessageRecord): string
 
     if (envelopeType === "error") {
       const errorText = normalizeContextText(extractHumanText(record?.content));
-      return `${formatContextHeader("Error", message.sentAt)}\n${errorText || "Unknown error"}`;
+      return `${formatContextHeader("Error", message.sentAt)}\n${truncateContextBlock(
+        errorText || "Unknown error",
+        limits.fallback,
+      )}`;
     }
 
     if (envelopeType === "assistant" || envelopeType === "user") {
       const nestedMessage = asRecord(record?.message);
-      const lines = formatStructuredMessageBlocks(nestedMessage?.content);
+      const lines = formatStructuredMessageBlocks(nestedMessage?.content, limits);
       if (lines.length === 0) {
         return null;
       }
@@ -297,7 +390,7 @@ export function formatSessionContextEntry(message: SessionMessageRecord): string
     // Not JSON; fall back to the raw message content below.
   }
 
-  return `${formatContextHeader(fallbackLabel, message.sentAt)}\n${truncate(rawText, 1400)}`;
+  return `${formatContextHeader(fallbackLabel, message.sentAt)}\n${truncateContextBlock(rawText, limits.rawMessage)}`;
 }
 
 export function formatStatusLine(

@@ -250,6 +250,20 @@ describe("formatSessionContextEntry", () => {
     expect(result).toContain("hello world");
   });
 
+  it("simplifies local markdown file links", () => {
+    const result = formatSessionContextEntry({
+      role: "user",
+      content: "Read [`prepare.py`](/Users/xudong/conductor/workspaces/autoresearch/bangalore/prepare.py#L30) first.",
+      sentAt: "2026-03-29T10:23:00.000Z",
+      turnId: null,
+      model: null,
+    });
+
+    expect(result).toContain("Read prepare.py:30 first.");
+    expect(result).not.toContain("/Users/xudong");
+    expect(result).not.toContain("[`prepare.py`]");
+  });
+
   it("formats structured assistant text", () => {
     const result = formatSessionContextEntry({
       role: "assistant",
@@ -266,6 +280,31 @@ describe("formatSessionContextEntry", () => {
 
     expect(result).toContain("[Assistant");
     expect(result).toContain("working on it");
+  });
+
+  it("keeps long raw messages intact in full mode", () => {
+    const longMessage = "a".repeat(1600);
+    const preview = formatSessionContextEntry({
+      role: "user",
+      content: longMessage,
+      sentAt: "2026-03-29T10:23:00.000Z",
+      turnId: null,
+      model: null,
+    });
+    const full = formatSessionContextEntry(
+      {
+        role: "user",
+        content: longMessage,
+        sentAt: "2026-03-29T10:23:00.000Z",
+        turnId: null,
+        model: null,
+      },
+      "full",
+    );
+
+    expect(preview).not.toContain(longMessage);
+    expect(preview).toContain("…");
+    expect(full).toContain(longMessage);
   });
 
   it("formats tool calls and tool results", () => {
