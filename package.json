@@ -1,26 +1,46 @@
 {
-  "name": "tunis",
+  "name": "telegram-conductor-bridge",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Telegram bridge for controlling a local Conductor installation on the same Mac.",
+  "private": true,
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "test": "vitest run",
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
+    "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src/",
     "format:check": "prettier --check src/",
     "format": "prettier --write src/",
     "ci": "npm run typecheck && npm run lint && npm run format:check && npm run test"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "telegram",
+    "conductor",
+    "codex",
+    "bridge"
+  ],
+  "author": "xudong963",
+  "license": "Apache-2.0",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xudong963/conductor_mobile.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xudong963/conductor_mobile/issues"
+  },
+  "homepage": "https://github.com/xudong963/conductor_mobile#readme",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "better-sqlite3": "^12.8.0",
-    "dotenv": "^17.3.1",
     "zod": "^4.3.6"
   },
   "devDependencies": {

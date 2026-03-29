@@ -1,6 +1,10 @@
 # Telegram Conductor Bridge
 
-Control the local Conductor instance from Telegram. The current version supports:
+Control the local Conductor instance from Telegram.
+
+This bridge must run on the same Mac that already has Conductor installed and initialized. It reads the local Conductor database and launches the local Codex binary from that machine; it is not a remote bridge for controlling another computer's Conductor instance.
+
+The current version supports:
 
 - Browsing repos
 - Browsing and switching branches with workspace descriptions
@@ -16,12 +20,15 @@ Control the local Conductor instance from Telegram. The current version supports
 
 ## Prerequisites
 
+- The program is started on a Mac where Conductor is already installed and has been opened at least once
+- Node.js 22 or newer is installed
 - Conductor is already installed and has been used on macOS
 - The local Conductor DB exists at:
   `~/Library/Application Support/com.conductor.app/conductor.db`
 - The local Codex binary exists at:
   `~/Library/Application Support/com.conductor.app/bin/codex`
 - A Telegram Bot token is available
+- If you want to use the bridge in a forum-enabled Telegram supergroup, the bot should be added as an administrator so it can create topics and manage its status/context messages. In private chats, administrator permissions are not required.
 
 ## Setup
 
@@ -47,6 +54,8 @@ Set `TELEGRAM_ALLOWED_CHAT_IDS` to the Telegram chat IDs that may use the bridge
 `BRIDGE_DB_PATH` defaults to `.context/bridge.db`. The current version creates this directory on startup, so `.context/` does not need to exist in advance.
 
 ## Run
+
+Run the bridge on the same computer where Conductor is installed:
 
 ```bash
 npm start
