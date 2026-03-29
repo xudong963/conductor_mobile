@@ -232,7 +232,10 @@ export class TelegramBridgeService {
           return;
         }
         this.stateStore.setComposeMode(chatId, "new_session", { composeWorkspaceId: ctx.activeWorkspaceId });
-        await this.telegram.sendMessage(chatId, "Your next message will create a new session in the current workspace.");
+        await this.telegram.sendMessage(
+          chatId,
+          "Your next message will create a new session in the current workspace.",
+        );
         break;
       }
       case "/inbox":
@@ -305,9 +308,13 @@ export class TelegramBridgeService {
     }
 
     if (runtime.waitingPlan || session.status === "needs_plan_response") {
-      await this.telegram.sendMessage(chatId, "This turn is waiting for plan confirmation. Tap Approve Plan or Revise Plan.", {
-        reply_markup: { inline_keyboard: planKeyboard() },
-      });
+      await this.telegram.sendMessage(
+        chatId,
+        "This turn is waiting for plan confirmation. Tap Approve Plan or Revise Plan.",
+        {
+          reply_markup: { inline_keyboard: planKeyboard() },
+        },
+      );
       return;
     }
 
@@ -535,7 +542,10 @@ export class TelegramBridgeService {
       composeTargetThreadId: session.claudeSessionId,
       composeTargetTurnId: runtime.activeTurnId,
     });
-    await this.telegram.sendMessage(chatId, "Entered Revise Plan mode. Your next message will be sent as plan feedback.");
+    await this.telegram.sendMessage(
+      chatId,
+      "Entered Revise Plan mode. Your next message will be sent as plan feedback.",
+    );
   }
 
   private async enterReplyRequiredMode(chatId: number): Promise<void> {

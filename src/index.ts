@@ -211,7 +211,9 @@ class TelegramConductorBridge {
           });
           const chatId = update.message?.chat.id ?? update.callback_query?.message?.chat.id ?? null;
           if (chatId) {
-            await this.safeSendMessage(chatId, "Failed to process that message. Please try again.").catch(() => undefined);
+            await this.safeSendMessage(chatId, "Failed to process that message. Please try again.").catch(
+              () => undefined,
+            );
           }
         } finally {
           this.stateStore.setTelegramCursor(update.update_id);
@@ -495,7 +497,10 @@ class TelegramConductorBridge {
 
     if (!session) {
       if (context.activeWorkspaceId) {
-        await this.showHome(chatId, "There is no chat to continue on the current branch. Tap New Chat Here to create one.");
+        await this.showHome(
+          chatId,
+          "There is no chat to continue on the current branch. Tap New Chat Here to create one.",
+        );
         return;
       }
       await this.showRepositories(chatId, "Select a repo, branch, and chat first.");
