@@ -29,6 +29,7 @@ import type {
 } from "./types.js";
 import { logger } from "./utils/logger.js";
 import { KeyedSerialTaskQueue } from "./utils/keyed-serial-task-queue.js";
+import { isStatusProbeText } from "./utils/intent.js";
 import {
   extractHumanText,
   formatBranchName,
@@ -218,6 +219,7 @@ function buildHelpText(): string {
     "",
     "You can also tap Help on the home screen.",
     "Plain text continues the currently selected chat.",
+    "Short status questions like 'status' or '目前什么状态' refresh the status panel.",
     "In forum-enabled supergroups, each chat streams in its dedicated topic.",
   ].join("\n");
 }
@@ -594,6 +596,11 @@ export class TelegramConductorBridge {
   }
 
   private async handlePlainText(location: TelegramConversationTarget, text: string): Promise<void> {
+    if (isStatusProbeText(text)) {
+      await this.showStatus(location);
+      return;
+    }
+
     const context = this.stateStore.getConversationContext(location);
     const session = this.resolveSelectedSession(location);
 
@@ -1043,7 +1050,10 @@ export class TelegramConductorBridge {
 
     if (!fromQueue && this.shouldQueueSession(session)) {
       this.stateStore.enqueuePrompt(session.id, session.claudeSessionId, "normal", text);
-      await this.safeSendMessage(location, "The current chat is busy. Your message was added to the queue.");
+      await this.safeSendMessage(
+        location,
+        "The current chat is busy. Your message was added to the queue. Use /status or /queue to check progress.",
+      );
       return "queued";
     }
 

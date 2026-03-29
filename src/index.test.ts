@@ -157,4 +157,22 @@ describe("TelegramConductorBridge", () => {
     expect(stateStore.retryPrompt).toHaveBeenCalledWith(7);
     expect(stateStore.markPromptFinished).not.toHaveBeenCalled();
   });
+
+  it("treats short status probes as status checks instead of chat input", async () => {
+    const { bridge } = createBridge();
+    const showStatus = vi.fn().mockResolvedValue(undefined);
+    const submitPrompt = vi.fn();
+
+    (bridge as unknown as { showStatus: typeof showStatus }).showStatus = showStatus;
+    (bridge as unknown as { submitPrompt: typeof submitPrompt }).submitPrompt = submitPrompt;
+
+    await (
+      bridge as unknown as {
+        handlePlainText: (location: { chatId: number; messageThreadId: number | null }, text: string) => Promise<void>;
+      }
+    ).handlePlainText({ chatId: 99, messageThreadId: null }, "目前什么状态");
+
+    expect(showStatus).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
+    expect(submitPrompt).not.toHaveBeenCalled();
+  });
 });
