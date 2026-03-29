@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -11,6 +12,7 @@ import type {
   SessionStatus,
   WorkspaceRef,
 } from "../types.js";
+import { sortRepositoryWorkspaces, type RepositoryWorkspacePriorityRef } from "../utils/workspace-priority.js";
 
 interface DbSessionRow {
   id: string;
@@ -23,6 +25,14 @@ interface DbSessionRow {
   claudeSessionId: string | null;
   updatedAt: string;
   lastUserMessageAt: string | null;
+}
+
+interface DbWorkspacePriorityRow extends WorkspaceRef {
+  activeSessionStatus: SessionStatus | null;
+  archiveCommit: string | null;
+  hasLocalUserMessages: number;
+  state: string | null;
+  defaultBranch: string;
 }
 
 export class ConductorRegistryAdapter {
@@ -116,7 +126,7 @@ export class ConductorRegistryAdapter {
   }
 
   listWorkspacesForRepository(repositoryId: string, limit: number): WorkspaceRef[] {
-    return this.db
+    const rows = this.db
       .prepare(
         `
           SELECT
@@ -126,18 +136,100 @@ export class ConductorRegistryAdapter {
             w.pr_title as prTitle,
             w.repository_id as repositoryId,
             w.active_session_id as activeSessionId,
+            active.status as activeSessionStatus,
             w.updated_at as updatedAt,
+            w.state as state,
+            w.archive_commit as archiveCommit,
+            EXISTS (
+              SELECT 1
+              FROM sessions handled
+              WHERE handled.workspace_id = w.id
+                AND handled.last_user_message_at IS NOT NULL
+            ) as hasLocalUserMessages,
+            r.default_branch as defaultBranch,
             r.root_path as rootPath,
             r.name as repositoryName
           FROM workspaces w
           JOIN repos r ON r.id = w.repository_id
+          LEFT JOIN sessions active ON active.id = w.active_session_id
           WHERE w.repository_id = ?
             AND IFNULL(r.hidden, 0) = 0
-          ORDER BY w.updated_at DESC
-          LIMIT ?
         `,
       )
-      .all(repositoryId, limit) as WorkspaceRef[];
+      .all(repositoryId) as DbWorkspacePriorityRow[];
+
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const repositoryRootPath = rows[0]?.rootPath;
+    const defaultBranch = rows[0]?.defaultBranch;
+    if (!repositoryRootPath) {
+      return rows.slice(0, limit);
+    }
+
+    const mergedBranchNames = this.getMergedBranchNames(repositoryRootPath, defaultBranch);
+    const sortableRows: RepositoryWorkspacePriorityRef[] = rows.map((row) => ({
+      id: row.id,
+      directoryName: row.directoryName,
+      branch: row.branch,
+      ...(row.prTitle !== undefined ? { prTitle: row.prTitle } : {}),
+      repositoryId: row.repositoryId,
+      activeSessionId: row.activeSessionId,
+      updatedAt: row.updatedAt,
+      rootPath: row.rootPath,
+      repositoryName: row.repositoryName,
+      activeSessionStatus: row.activeSessionStatus,
+      archiveCommit: row.archiveCommit,
+      hasLocalUserMessages: Boolean(row.hasLocalUserMessages),
+      state: row.state,
+    }));
+
+    return sortRepositoryWorkspaces(sortableRows, mergedBranchNames).slice(0, limit);
+  }
+
+  private getMergedBranchNames(rootPath: string, defaultBranch: string | null | undefined): Set<string> {
+    const normalizedDefaultBranch = defaultBranch?.trim() || "master";
+
+    for (const targetRef of [normalizedDefaultBranch, `origin/${normalizedDefaultBranch}`]) {
+      try {
+        const output = execFileSync(
+          "git",
+          [
+            "-C",
+            rootPath,
+            "for-each-ref",
+            `--merged=${targetRef}`,
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+          ],
+          { encoding: "utf8" },
+        );
+
+        return new Set(
+          output
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .flatMap((refName) => {
+              if (refName.startsWith("refs/heads/")) {
+                return [refName.slice("refs/heads/".length)];
+              }
+              if (refName.startsWith("refs/remotes/")) {
+                const remotePath = refName.slice("refs/remotes/".length);
+                const firstSlash = remotePath.indexOf("/");
+                return firstSlash >= 0 ? [remotePath.slice(firstSlash + 1)] : [];
+              }
+              return [];
+            }),
+        );
+      } catch {
+        continue;
+      }
+    }
+
+    return new Set<string>();
   }
 
   listSessions(workspaceId: string, limit: number): ConductorSessionRef[] {
