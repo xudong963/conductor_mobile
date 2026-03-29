@@ -234,10 +234,7 @@ describe("TelegramConductorBridge", () => {
 
     await (
       bridge as unknown as {
-        handleCodexNotification: (notification: {
-          method: string;
-          params: Record<string, unknown>;
-        }) => Promise<void>;
+        handleCodexNotification: (notification: { method: string; params: Record<string, unknown> }) => Promise<void>;
       }
     ).handleCodexNotification({
       method: "item/started",
