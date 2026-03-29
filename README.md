@@ -9,7 +9,7 @@ Control the local Conductor instance from Telegram. The current version supports
 - Creating a new Conductor chat on the current branch
 - Automatically creating a Telegram topic for a new Conductor chat when the current conversation supports topics
 - Basic queueing
-- Streamed text updates on a reusable single-message status panel
+- Streamed text updates inside dedicated Telegram topics
 - A single-message paginated context viewer
 - Basic `requestUserInput` and plan feedback flows
 - Telegram slash command syncing
@@ -64,7 +64,7 @@ npm run dev
 - `/repos` or `/workspaces`: choose a repo
 - `/branches`: choose a branch
 - `/chats` or `/sessions`: choose a chat
-- `/status`: open or refresh the current chat's single-message status panel
+- `/status`: open or refresh the current chat's status panel
 - `/queue`: inspect the current chat queue
 - `/context [N]`: open a paginated single-message context viewer with older/newer, refresh, and close controls
 - `/new`: make the next plain-text message create a new chat on the current branch
@@ -95,10 +95,10 @@ Create a new chat:
 
 ## Output Model
 
-- `/status` creates or refreshes a reusable status panel; subsequent runtime output edits that same message instead of appending a new one.
+- `/status` creates or refreshes a reusable status panel when you want a compact status view.
 - `/context [N]` opens a separate context preview card; paging and refresh actions only update that single message.
-- In topic-enabled chats, each Conductor chat can stream in its dedicated topic instead of the root Telegram chat.
-- Both panels stay scoped to the current topic instead of the whole Telegram chat.
+- In topic-enabled chats, each Conductor chat streams as a normal assistant message inside its dedicated topic instead of using the status panel.
+- The context preview stays scoped to the current topic instead of the whole Telegram chat.
 - Both the status panel and the context preview can be closed to keep the Telegram chat tidy.
 
 ## Notes

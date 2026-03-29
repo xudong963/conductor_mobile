@@ -76,6 +76,15 @@ interface SessionPanelState {
   sessionId: string | null;
 }
 
+interface SessionStreamState {
+  keyboardFingerprint: string | null;
+  lastSentAt: number;
+  lastText: string;
+  messageId: number | null;
+  sessionId: string | null;
+  turnId: string | null;
+}
+
 interface RuntimeState {
   assistantText: string;
   model: string | null;
@@ -166,6 +175,9 @@ const BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "help", description: "Show help" },
 ];
 
+const STREAM_EDIT_INTERVAL_MS = 400;
+const STREAM_EAGER_EDIT_CHARS = 120;
+
 function buildHelpText(): string {
   return [
     "Available commands:",
@@ -203,6 +215,8 @@ class TelegramConductorBridge {
   private readonly contextViewers = new Map<string, ContextViewerState>();
   private readonly sessionPanels = new Map<string, SessionPanelState>();
   private readonly sessionPanelQueue = new KeyedSerialTaskQueue<string>();
+  private readonly sessionStreams = new Map<string, SessionStreamState>();
+  private readonly sessionStreamQueue = new KeyedSerialTaskQueue<string>();
   private queueTimer: NodeJS.Timeout | null = null;
   private stopped = false;
 
@@ -1068,7 +1082,7 @@ class TelegramConductorBridge {
       sentAt: new Date().toISOString(),
     });
 
-    if (!fromQueue && !options?.suppressSentConfirmation) {
+    if (!fromQueue && !options?.suppressSentConfirmation && location.messageThreadId === null) {
       await this.safeSendMessage(location, "Sent.");
     }
     return true;
@@ -1655,6 +1669,29 @@ class TelegramConductorBridge {
     }
   }
 
+  private resolveRuntimeBody(
+    runtime: RuntimeState,
+    bodyOverride: string | undefined,
+    activePlaceholder: string | null,
+  ): string | null {
+    if (bodyOverride !== undefined) {
+      return bodyOverride;
+    }
+    if (runtime.planText) {
+      return runtime.planText;
+    }
+    if (runtime.assistantText) {
+      return runtime.assistantText;
+    }
+    if (runtime.status === "waiting_user_input") {
+      return "Waiting for your reply.";
+    }
+    if (runtime.status === "waiting_plan") {
+      return "Waiting for your plan approval.";
+    }
+    return activePlaceholder;
+  }
+
   private async pushRuntimeUpdate(
     runtime: RuntimeState,
     bodyOverride?: string,
@@ -1665,15 +1702,8 @@ class TelegramConductorBridge {
       return;
     }
     const workspace = this.registry.getWorkspaceById(session.workspaceId);
-    const body =
-      bodyOverride ??
-      runtime.planText ??
-      runtime.assistantText ??
-      (runtime.status === "waiting_user_input"
-        ? "Waiting for your reply."
-        : runtime.status === "waiting_plan"
-          ? "Waiting for your plan approval."
-          : "Working...");
+    const panelBody = this.resolveRuntimeBody(runtime, bodyOverride, "Working...");
+    const streamBody = this.resolveRuntimeBody(runtime, bodyOverride, null);
 
     const markup =
       keyboard ??
@@ -1685,11 +1715,18 @@ class TelegramConductorBridge {
     const _workspace = workspace;
     const locations = this.stateStore.listFollowingConversations(runtime.sessionId);
     for (const location of locations) {
+      if (location.messageThreadId !== null) {
+        if (!streamBody) {
+          continue;
+        }
+        await this.upsertSessionStream(location, runtime, streamBody, markup);
+        continue;
+      }
       await this.renderSessionPanel(location, {
-        bodyOverride: body,
         runtime,
         session,
         workspace: _workspace,
+        ...(panelBody !== null ? { bodyOverride: panelBody } : {}),
         ...(markup ? { keyboard: markup } : {}),
       });
     }
@@ -1875,6 +1912,75 @@ class TelegramConductorBridge {
     const text = truncate(`${lines.join("\n")}\n\n${body}`, 3800);
     const keyboard = this.sessionPanelKeyboard(options?.keyboard);
     await this.upsertSessionPanel(location, session?.id ?? null, text, keyboard);
+  }
+
+  private async upsertSessionStream(
+    location: TelegramConversationTarget,
+    runtime: RuntimeState,
+    text: string,
+    keyboard?: TelegramInlineKeyboard,
+  ): Promise<void> {
+    const key = conversationKey(location);
+    const nextText = truncate(text, 3800);
+    const keyboardFingerprint = keyboard ? JSON.stringify(keyboard) : null;
+    await this.sessionStreamQueue.run(key, async () => {
+      const now = Date.now();
+      const existing = this.sessionStreams.get(key);
+
+      if (
+        existing &&
+        existing.messageId &&
+        existing.sessionId === runtime.sessionId &&
+        existing.turnId === runtime.turnId &&
+        existing.lastText === nextText &&
+        existing.keyboardFingerprint === keyboardFingerprint
+      ) {
+        return;
+      }
+
+      if (
+        existing &&
+        existing.messageId &&
+        existing.sessionId === runtime.sessionId &&
+        existing.turnId === runtime.turnId &&
+        runtime.status === "active" &&
+        existing.keyboardFingerprint === keyboardFingerprint &&
+        now - existing.lastSentAt < STREAM_EDIT_INTERVAL_MS &&
+        nextText.length - existing.lastText.length < STREAM_EAGER_EDIT_CHARS
+      ) {
+        return;
+      }
+
+      if (existing?.messageId && existing.sessionId === runtime.sessionId && existing.turnId === runtime.turnId) {
+        try {
+          await this.telegram.editMessageText(location.chatId, existing.messageId, nextText, keyboard);
+          this.sessionStreams.set(key, {
+            keyboardFingerprint,
+            lastSentAt: now,
+            lastText: nextText,
+            messageId: existing.messageId,
+            sessionId: runtime.sessionId,
+            turnId: runtime.turnId,
+          });
+          return;
+        } catch (error) {
+          logger.warn("failed to edit session stream, sending new message", error);
+        }
+      }
+
+      const messageId = await this.telegram.sendMessage(location.chatId, nextText, {
+        ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+        ...(location.messageThreadId !== null ? { message_thread_id: location.messageThreadId } : {}),
+      });
+      this.sessionStreams.set(key, {
+        keyboardFingerprint,
+        lastSentAt: now,
+        lastText: nextText,
+        messageId,
+        sessionId: runtime.sessionId,
+        turnId: runtime.turnId,
+      });
+    });
   }
 
   private async resolveSessionPanelBody(
