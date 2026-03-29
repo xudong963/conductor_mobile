@@ -1,5 +1,5 @@
 import type { ConductorSessionRef, TelegramInlineKeyboard, WorkspaceRef } from "../types.js";
-import { formatWorkspaceLabel } from "../utils/text.js";
+import { formatSessionButtonLabel, formatWorkspaceLabel } from "../utils/text.js";
 
 export function homeKeyboard(): TelegramInlineKeyboard {
   return [
@@ -34,9 +34,9 @@ export function workspacesKeyboard(workspaces: WorkspaceRef[]): TelegramInlineKe
 }
 
 export function sessionsKeyboard(sessions: ConductorSessionRef[]): TelegramInlineKeyboard {
-  const rows = sessions.map((session) => [
+  const rows = sessions.map((session, index) => [
     {
-      text: `${session.title ?? "Untitled"} (${session.status})`,
+      text: formatSessionButtonLabel(session, index),
       callback_data: `session:${session.id}`,
     },
   ]);

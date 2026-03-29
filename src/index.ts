@@ -25,6 +25,7 @@ import { logger } from "./utils/logger.js";
 import {
   extractHumanText,
   formatPlan,
+  formatSessionPickerText,
   formatStatusLine,
   formatWorkspaceLabel,
   sanitizeSessionTitle,
@@ -527,7 +528,10 @@ class TelegramConductorBridge {
       return;
     }
 
-    const text = [prefix, "选择一个 session："].filter(Boolean).join("\n\n");
+    const text = formatSessionPickerText(sessions, {
+      activeSessionId: context.activeSessionId,
+      prefix,
+    });
     await this.safeSendMessage(chatId, text, sessionsKeyboard(sessions));
   }
 
