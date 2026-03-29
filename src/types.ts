@@ -4,6 +4,13 @@ export type QueueKind = "normal" | "new_session";
 
 export type SessionStatus = "idle" | "working" | "needs_user_input" | "needs_plan_response" | "error" | "cancelling";
 
+export interface RepositoryRef {
+  id: string;
+  repositoryName: string;
+  rootPath: string;
+  updatedAt: string;
+}
+
 export interface WorkspaceRef {
   id: string;
   directoryName: string;

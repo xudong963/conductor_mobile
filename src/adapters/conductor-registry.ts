@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   ConductorSessionRef,
+  RepositoryRef,
   SessionDefaults,
   SessionMessageRecord,
   SessionSeed,
@@ -69,6 +70,26 @@ export class ConductorRegistryAdapter {
       .all(limit) as WorkspaceRef[];
   }
 
+  listRepositories(limit: number): RepositoryRef[] {
+    return this.db
+      .prepare(
+        `
+          SELECT
+            r.id,
+            r.name as repositoryName,
+            r.root_path as rootPath,
+            MAX(w.updated_at) as updatedAt
+          FROM workspaces w
+          JOIN repos r ON r.id = w.repository_id
+          WHERE IFNULL(r.hidden, 0) = 0
+          GROUP BY r.id, r.name, r.root_path
+          ORDER BY MAX(w.updated_at) DESC
+          LIMIT ?
+        `,
+      )
+      .all(limit) as RepositoryRef[];
+  }
+
   getWorkspaceById(workspaceId: string): WorkspaceRef | null {
     const row = this.db
       .prepare(
@@ -90,6 +111,30 @@ export class ConductorRegistryAdapter {
       )
       .get(workspaceId) as WorkspaceRef | undefined;
     return row ?? null;
+  }
+
+  listWorkspacesForRepository(repositoryId: string, limit: number): WorkspaceRef[] {
+    return this.db
+      .prepare(
+        `
+          SELECT
+            w.id,
+            w.directory_name as directoryName,
+            w.branch as branch,
+            w.repository_id as repositoryId,
+            w.active_session_id as activeSessionId,
+            w.updated_at as updatedAt,
+            r.root_path as rootPath,
+            r.name as repositoryName
+          FROM workspaces w
+          JOIN repos r ON r.id = w.repository_id
+          WHERE w.repository_id = ?
+            AND IFNULL(r.hidden, 0) = 0
+          ORDER BY w.updated_at DESC
+          LIMIT ?
+        `,
+      )
+      .all(repositoryId, limit) as WorkspaceRef[];
   }
 
   listSessions(workspaceId: string, limit: number): ConductorSessionRef[] {

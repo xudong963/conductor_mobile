@@ -1,4 +1,4 @@
-import type { ConductorSessionRef, SessionMessageRecord, WorkspaceRef } from "../types.js";
+import type { ConductorSessionRef, RepositoryRef, SessionMessageRecord, WorkspaceRef } from "../types.js";
 
 export function truncate(input: string, max = 4000): string {
   if (input.length <= max) {
@@ -20,6 +20,26 @@ export function formatSessionButtonLabel(session: Pick<ConductorSessionRef, "tit
   return truncate(`${index + 1}. ${formatSessionTitle(session.title)}`, max);
 }
 
+export function formatBranchName(workspace: Pick<WorkspaceRef, "branch" | "directoryName"> | null | undefined): string {
+  if (!workspace) {
+    return "No branch";
+  }
+  const branchName = workspace.branch?.trim();
+  if (branchName) {
+    return branchName;
+  }
+  const directoryName = workspace.directoryName.trim();
+  return directoryName || "No branch";
+}
+
+export function formatBranchButtonLabel(
+  workspace: Pick<WorkspaceRef, "branch" | "directoryName">,
+  index: number,
+  max = 28,
+): string {
+  return truncate(`${index + 1}. ${formatBranchName(workspace)}`, max);
+}
+
 export function formatSessionPickerText(
   sessions: Array<Pick<ConductorSessionRef, "id" | "title" | "status">>,
   options?: {
@@ -38,6 +58,32 @@ export function formatSessionPickerText(
       meta.join(" · "),
       `ID: ${session.id.slice(0, 8)}`,
     ].join("\n");
+  });
+
+  return [options?.prefix, options?.heading ?? "选择一个 session：", ...blocks, "点下方按钮选择。"]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+export function formatBranchPickerText(
+  workspaces: Array<Pick<WorkspaceRef, "id" | "branch" | "directoryName">>,
+  options?: {
+    activeWorkspaceId?: string | null | undefined;
+    heading?: string | undefined;
+    prefix?: string | undefined;
+  },
+): string {
+  const blocks = workspaces.map((workspace, index) => {
+    const meta: string[] = [];
+    if (workspace.id === options?.activeWorkspaceId) {
+      meta.push("当前");
+    }
+
+    const branchName = formatBranchName(workspace);
+    const directoryName = workspace.directoryName.trim();
+    const details = directoryName && directoryName !== branchName ? `目录: ${directoryName}` : null;
+
+    return [`${index + 1}. ${truncate(branchName, 120)}`, meta.join(" · ") || null, details].filter(Boolean).join("\n");
   });
 
   return [options?.prefix, options?.heading ?? "选择一个 session：", ...blocks, "点下方按钮选择。"]
@@ -242,6 +288,13 @@ export function formatWorkspaceLabel(
   }
 
   return repositoryName;
+}
+
+export function formatRepositoryLabel(
+  repository: Pick<RepositoryRef, "repositoryName"> | Pick<WorkspaceRef, "repositoryName"> | null | undefined,
+): string {
+  const repositoryName = repository?.repositoryName?.trim();
+  return repositoryName || "No workspace";
 }
 
 export function formatPlan(plan: Array<{ step: string; status: string }>, explanation?: string | null): string {

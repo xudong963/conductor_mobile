@@ -179,8 +179,10 @@ export class TelegramBridgeService {
         }
       } else if (data === "home:sessions") {
         await this.showSessions(chatId);
+      } else if (data === "home:branches") {
+        await this.showWorkspaces(chatId, "选择 branch");
       } else if (data === "home:workspaces") {
-        await this.showWorkspaces(chatId, "选择 workspace");
+        await this.showWorkspaces(chatId, "选择 repo");
       } else if (data === "home:inbox") {
         await this.showInbox(chatId);
       } else if (data === "back:home") {
@@ -212,9 +214,14 @@ export class TelegramBridgeService {
       case "/home":
         await this.showHome(chatId);
         break;
+      case "/repos":
       case "/workspaces":
-        await this.showWorkspaces(chatId, "选择 workspace");
+        await this.showWorkspaces(chatId, "选择 repo");
         break;
+      case "/branches":
+        await this.showWorkspaces(chatId, "选择 branch");
+        break;
+      case "/chats":
       case "/sessions":
         await this.showSessions(chatId);
         break;

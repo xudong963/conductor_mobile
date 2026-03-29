@@ -2,10 +2,11 @@
 
 在手机上的 Telegram 私聊里控制本机 Conductor，当前版本支持：
 
-- 浏览 workspace
-- 浏览并切换 session
+- 浏览 repo
+- 浏览并切换 branch
+- 浏览并切换 chat
 - 继续已有 Codex session
-- 在当前 workspace 下创建新的 Conductor session
+- 在当前 branch 下创建新的 Conductor chat
 - 基础队列
 - 基础流式文本回推
 - 基础 `requestUserInput` / plan 反馈
@@ -58,6 +59,9 @@ npm run dev
 
 - `/start`
 - `/home`
+- `/repos`
+- `/branches`
+- `/chats`
 - `/workspaces`
 - `/sessions`
 - `/status`
@@ -69,17 +73,19 @@ npm run dev
 ## Basic Flow
 
 1. 在 Telegram 私聊 bot，输入 `/start`
-2. 点 `Switch Workspace`
-3. 选一个 workspace
-4. 点 `Switch Session`
-5. 选一个已有 session
-6. 直接发文本，bridge 会把它继续发到当前 session
+2. 点 `Switch Repo`
+3. 先选一个 repo
+4. 点 `Switch Branch`
+5. 再选该 repo 下的 branch
+6. 点 `Switch Chat`
+7. 选一个已有 chat
+8. 直接发文本，bridge 会把它继续发到当前 chat
 
-创建新 session：
+创建新 chat：
 
-1. 先选定 workspace
+1. 先选定 repo 和 branch
 2. 点 `New Chat Here` 或发 `/new`
-3. 下一条文本会创建一个新的 Conductor session，并自动切过去
+3. 下一条文本会创建一个新的 Conductor chat，并自动切过去
 
 ## Notes
 

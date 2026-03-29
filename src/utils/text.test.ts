@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   extractHumanText,
+  formatBranchButtonLabel,
+  formatBranchName,
+  formatBranchPickerText,
   formatPlan,
+  formatRepositoryLabel,
   formatSessionButtonLabel,
   formatSessionContextEntry,
   formatSessionPickerText,
@@ -41,6 +45,24 @@ describe("formatSessionButtonLabel", () => {
   });
 });
 
+describe("formatBranchName", () => {
+  it("prefers branch names", () => {
+    expect(formatBranchName({ branch: " feature/demo ", directoryName: "moscow" })).toBe("feature/demo");
+  });
+
+  it("falls back to directory names", () => {
+    expect(formatBranchName({ branch: null, directoryName: "spokane" })).toBe("spokane");
+  });
+});
+
+describe("formatBranchButtonLabel", () => {
+  it("numbers and truncates branch labels", () => {
+    expect(formatBranchButtonLabel({ branch: "feature/a-very-long-branch-name", directoryName: "moscow" }, 1, 18)).toBe(
+      "2. feature/a-very…",
+    );
+  });
+});
+
 describe("formatSessionPickerText", () => {
   it("renders session previews with current marker", () => {
     const result = formatSessionPickerText(
@@ -61,6 +83,34 @@ describe("formatSessionPickerText", () => {
     expect(result).toContain("状态: needs user input");
     expect(result).toContain("ID: session-");
     expect(result).toContain("点下方按钮选择。");
+  });
+});
+
+describe("formatBranchPickerText", () => {
+  it("renders branch previews with current marker", () => {
+    const result = formatBranchPickerText(
+      [
+        { id: "workspace-1", branch: "feature/demo", directoryName: "moscow" },
+        { id: "workspace-2", branch: null, directoryName: "spokane" },
+      ],
+      {
+        activeWorkspaceId: "workspace-1",
+        prefix: "已切换到 workspace：demo",
+      },
+    );
+
+    expect(result).toContain("已切换到 workspace：demo");
+    expect(result).toContain("1. feature/demo");
+    expect(result).toContain("当前");
+    expect(result).toContain("目录: moscow");
+    expect(result).toContain("2. spokane");
+    expect(result).toContain("点下方按钮选择。");
+  });
+});
+
+describe("formatRepositoryLabel", () => {
+  it("returns trimmed repo names", () => {
+    expect(formatRepositoryLabel({ repositoryName: " conductor_mobile " })).toBe("conductor_mobile");
   });
 });
 
