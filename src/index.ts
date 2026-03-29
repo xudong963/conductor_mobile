@@ -27,6 +27,7 @@ import type {
   WorkspaceRef,
 } from "./types.js";
 import { logger } from "./utils/logger.js";
+import { KeyedSerialTaskQueue } from "./utils/keyed-serial-task-queue.js";
 import {
   extractHumanText,
   formatBranchName,
@@ -201,6 +202,7 @@ class TelegramConductorBridge {
   private readonly sessionIdByThreadId = new Map<string, string>();
   private readonly contextViewers = new Map<string, ContextViewerState>();
   private readonly sessionPanels = new Map<string, SessionPanelState>();
+  private readonly sessionPanelQueue = new KeyedSerialTaskQueue<string>();
   private queueTimer: NodeJS.Timeout | null = null;
   private stopped = false;
 
@@ -1036,15 +1038,27 @@ class TelegramConductorBridge {
     }
 
     this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
-    this.runtimes.set(session.id, {
-      sessionId: session.id,
-      threadId: session.claudeSessionId,
-      turnId,
-      status: "active",
-      assistantText: "",
-      planText: null,
-      model: session.model,
-    });
+    const existingRuntime = this.runtimes.get(session.id);
+    this.runtimes.set(
+      session.id,
+      existingRuntime && existingRuntime.turnId === turnId
+        ? {
+            ...existingRuntime,
+            model: session.model,
+            sessionId: session.id,
+            threadId: session.claudeSessionId,
+            turnId,
+          }
+        : {
+            sessionId: session.id,
+            threadId: session.claudeSessionId,
+            turnId,
+            status: "active",
+            assistantText: "",
+            planText: null,
+            model: session.model,
+          },
+    );
 
     this.mirror.updateSessionStatus(session.id, "working");
     this.mirror.appendUserMessage({
@@ -1911,43 +1925,45 @@ class TelegramConductorBridge {
     text: string,
     keyboard: TelegramInlineKeyboard,
   ): Promise<void> {
-    const keyboardFingerprint = JSON.stringify(keyboard);
     const key = conversationKey(location);
-    const existing = this.sessionPanels.get(key);
-    if (
-      existing &&
-      existing.messageId &&
-      existing.sessionId === sessionId &&
-      existing.lastText === text &&
-      existing.keyboardFingerprint === keyboardFingerprint
-    ) {
-      return;
-    }
-
-    if (existing?.messageId) {
-      try {
-        await this.telegram.editMessageText(location.chatId, existing.messageId, text, keyboard);
-        this.sessionPanels.set(key, {
-          keyboardFingerprint,
-          lastText: text,
-          messageId: existing.messageId,
-          sessionId,
-        });
+    await this.sessionPanelQueue.run(key, async () => {
+      const keyboardFingerprint = JSON.stringify(keyboard);
+      const existing = this.sessionPanels.get(key);
+      if (
+        existing &&
+        existing.messageId &&
+        existing.sessionId === sessionId &&
+        existing.lastText === text &&
+        existing.keyboardFingerprint === keyboardFingerprint
+      ) {
         return;
-      } catch (error) {
-        logger.warn("failed to edit session panel, sending new message", error);
       }
-    }
 
-    const messageId = await this.telegram.sendMessage(location.chatId, text, {
-      reply_markup: { inline_keyboard: keyboard },
-      ...(location.messageThreadId !== null ? { message_thread_id: location.messageThreadId } : {}),
-    });
-    this.sessionPanels.set(key, {
-      keyboardFingerprint,
-      lastText: text,
-      messageId,
-      sessionId,
+      if (existing?.messageId) {
+        try {
+          await this.telegram.editMessageText(location.chatId, existing.messageId, text, keyboard);
+          this.sessionPanels.set(key, {
+            keyboardFingerprint,
+            lastText: text,
+            messageId: existing.messageId,
+            sessionId,
+          });
+          return;
+        } catch (error) {
+          logger.warn("failed to edit session panel, sending new message", error);
+        }
+      }
+
+      const messageId = await this.telegram.sendMessage(location.chatId, text, {
+        reply_markup: { inline_keyboard: keyboard },
+        ...(location.messageThreadId !== null ? { message_thread_id: location.messageThreadId } : {}),
+      });
+      this.sessionPanels.set(key, {
+        keyboardFingerprint,
+        lastText: text,
+        messageId,
+        sessionId,
+      });
     });
   }
 
