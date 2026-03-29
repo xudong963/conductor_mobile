@@ -1,5 +1,5 @@
-import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
+import Database from "better-sqlite3";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -189,9 +189,12 @@ export class ConductorRegistryAdapter {
       archiveCommit: row.archiveCommit,
       hasLocalUserMessages: Boolean(row.hasLocalUserMessages),
       state: row.state,
+      defaultBranch: row.defaultBranch,
     }));
 
-    return sortRepositoryWorkspaces(sortableRows, mergedBranchNames).slice(0, limit);
+    return sortRepositoryWorkspaces(sortableRows, mergedBranchNames)
+      .filter((workspace) => !this.shouldHideWorkspaceFromRepositoryBranches(workspace, mergedBranchNames))
+      .slice(0, limit);
   }
 
   private getMergedBranchNames(rootPath: string, defaultBranch: string | null | undefined): Set<string> {
@@ -380,7 +383,25 @@ export class ConductorRegistryAdapter {
     if (!workspace) {
       throw new Error(`Workspace ${workspaceId} not found.`);
     }
+    return this.resolveWorkspaceDirectoryPath(workspace);
+  }
+
+  private resolveWorkspaceDirectoryPath(workspace: Pick<WorkspaceRef, "repositoryName" | "directoryName">): string {
     return path.join(this.workspacesRoot, workspace.repositoryName, workspace.directoryName);
+  }
+
+  private shouldHideWorkspaceFromRepositoryBranches(
+    workspace: Pick<RepositoryWorkspacePriorityRef, "branch" | "archiveCommit" | "state" | "prTitle" | "defaultBranch">,
+    mergedBranchNames: ReadonlySet<string>,
+  ): boolean {
+    const branch = workspace.branch?.trim();
+    const defaultBranch = workspace.defaultBranch?.trim();
+    if (branch && branch !== defaultBranch && mergedBranchNames.has(branch)) {
+      return true;
+    }
+
+    const isArchived = workspace.state?.trim().toLowerCase() === "archived" || Boolean(workspace.archiveCommit);
+    return isArchived && Boolean(workspace.prTitle?.trim());
   }
 
   updateWorkspaceActiveSession(workspaceId: string, sessionId: string): void {

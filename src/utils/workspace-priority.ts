@@ -5,6 +5,7 @@ export interface RepositoryWorkspacePriorityRef extends WorkspaceRef {
   archiveCommit: string | null;
   hasLocalUserMessages: boolean;
   state: string | null;
+  defaultBranch?: string | null;
 }
 
 export function isWorkspaceBranchMerged(
