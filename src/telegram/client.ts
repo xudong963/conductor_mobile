@@ -9,6 +9,7 @@ import type {
 
 const POLL_RETRY_DELAY_MS = 750;
 const POLL_TIMEOUT_BUFFER_MS = 10_000;
+const RETRYABLE_POLL_HTTP_STATUSES = new Set([408, 409, 429, 500, 502, 503, 504]);
 const RETRYABLE_NETWORK_ERROR_CODES = new Set([
   "ABORT_ERR",
   "ECONNREFUSED",
@@ -26,6 +27,12 @@ const RETRYABLE_NETWORK_ERROR_CODES = new Set([
 
 interface TelegramRequestOptions {
   timeoutMs?: number;
+}
+
+interface TelegramApiResponse {
+  ok: boolean;
+  description?: string;
+  error_code?: number;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -83,6 +90,21 @@ export class TelegramNetworkError extends Error {
   }
 }
 
+export class TelegramApiError extends Error {
+  readonly description: string | null;
+  readonly method: string;
+  readonly status: number | null;
+
+  constructor(method: string, status: number | null, description: string | null) {
+    const statusText = status === null ? "request failed" : `HTTP ${status}`;
+    super(`Telegram API ${method} failed: ${description ?? statusText}`);
+    this.name = "TelegramApiError";
+    this.method = method;
+    this.status = status;
+    this.description = description;
+  }
+}
+
 export function isTransientTelegramNetworkError(error: unknown): boolean {
   if (error instanceof TelegramNetworkError) {
     return error.code === null || RETRYABLE_NETWORK_ERROR_CODES.has(error.code);
@@ -97,13 +119,56 @@ export function isTransientTelegramNetworkError(error: unknown): boolean {
   return message.includes("fetch failed") || message.includes("socket") || message.includes("timed out");
 }
 
-export function summarizeTelegramNetworkError(error: unknown): { code: string | null; message: string } {
+export function isTransientTelegramError(error: unknown): boolean {
+  if (error instanceof TelegramApiError) {
+    return error.method === "getUpdates" && error.status !== null && RETRYABLE_POLL_HTTP_STATUSES.has(error.status);
+  }
+  return isTransientTelegramNetworkError(error);
+}
+
+export function summarizeTelegramError(error: unknown): { code: string | null; message: string } {
+  if (error instanceof TelegramApiError) {
+    const code = error.status === null ? null : String(error.status);
+    return {
+      code,
+      message: error.description ?? (code ? `HTTP ${code}` : "request failed"),
+    };
+  }
+
   const code = getErrorCode(error);
   const message = getPreferredErrorMessage(error) ?? "request failed";
   if (!code || message.includes(code)) {
     return { code, message };
   }
   return { code, message: `${message} (${code})` };
+}
+
+export const summarizeTelegramNetworkError = summarizeTelegramError;
+
+async function readTelegramApiError(
+  response: Response,
+): Promise<{ description: string | null; status: number | null }> {
+  let description: string | null = null;
+  let status: number | null = response.status;
+
+  try {
+    const text = await response.text();
+    if (text) {
+      try {
+        const data = JSON.parse(text) as TelegramApiResponse;
+        description = typeof data.description === "string" && data.description ? data.description : null;
+        if (typeof data.error_code === "number") {
+          status = data.error_code;
+        }
+      } catch {
+        description = text.trim() || null;
+      }
+    }
+  } catch {
+    description = null;
+  }
+
+  return { status, description };
 }
 
 export class TelegramClient {
@@ -209,11 +274,16 @@ export class TelegramClient {
     }
 
     if (!response.ok) {
-      throw new Error(`Telegram API ${method} failed: HTTP ${response.status}`);
+      const apiError = await readTelegramApiError(response);
+      throw new TelegramApiError(method, apiError.status, apiError.description);
     }
-    const data = (await response.json()) as { ok: boolean; description?: string };
+    const data = (await response.json()) as TelegramApiResponse;
     if (!data.ok) {
-      throw new Error(`Telegram API ${method} rejected: ${data.description ?? "unknown error"}`);
+      throw new TelegramApiError(
+        method,
+        typeof data.error_code === "number" ? data.error_code : response.status,
+        typeof data.description === "string" && data.description ? data.description : null,
+      );
     }
     return data as T;
   }
