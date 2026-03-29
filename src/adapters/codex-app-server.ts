@@ -26,6 +26,7 @@ interface ResumeThreadOptions {
   threadId: string;
   cwd?: string | null;
   model?: string | null;
+  allowMissingRollout?: boolean;
 }
 
 interface StartTurnOptions {
@@ -115,13 +116,21 @@ export class CodexAppServerAdapter extends EventEmitter {
   }
 
   async resumeThread(options: ResumeThreadOptions): Promise<void> {
-    await this.request("thread/resume", {
-      threadId: options.threadId,
-      cwd: options.cwd ?? null,
-      model: options.model ?? null,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-    });
+    try {
+      await this.request("thread/resume", {
+        threadId: options.threadId,
+        cwd: options.cwd ?? null,
+        model: options.model ?? null,
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (options.allowMissingRollout && message.includes("no rollout found for thread id")) {
+        return;
+      }
+      throw error;
+    }
   }
 
   async archiveThread(threadId: string): Promise<void> {
