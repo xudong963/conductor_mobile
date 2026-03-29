@@ -492,7 +492,7 @@ describe("TelegramBridgeService user flows", () => {
     expect(fixture.telegram.sentMessages).toEqual([
       {
         chatId: 999,
-        text: "未授权账号，无法访问 Conductor。",
+        text: "Unauthorized account. Access to Conductor is disabled.",
       },
     ]);
   });
@@ -536,7 +536,7 @@ describe("TelegramBridgeService user flows", () => {
     await handleUpdate(fixture, messageUpdate("/new"));
 
     expect(fixture.telegram.sentMessages).toHaveLength(1);
-    expect(fixture.telegram.sentMessages[0]?.text).toBe("先选 workspace，再创建新会话。");
+    expect(fixture.telegram.sentMessages[0]?.text).toBe("Select a workspace before creating a new session.");
     expect(fixture.telegram.sentMessages[0]?.options?.reply_markup?.inline_keyboard).toHaveLength(3);
   });
 
@@ -579,8 +579,8 @@ describe("TelegramBridgeService user flows", () => {
       text: "Build login flow\nwith retry handling",
     });
     expect(fixture.telegram.sentMessages.map((call) => call.text)).toEqual([
-      "下一条消息会创建当前 workspace 下的新 session。",
-      "已新建 session: Build login flow，开始执行首轮。",
+      "Your next message will create a new session in the current workspace.",
+      "Created session: Build login flow. Starting the first turn.",
     ]);
   });
 
@@ -605,7 +605,9 @@ describe("TelegramBridgeService user flows", () => {
 
     expect(fixture.codex.startedTurns).toHaveLength(1);
     expect(fixture.codex.startedTurns[0]?.input).toBe("First prompt");
-    expect(fixture.telegram.sentMessages[0]?.text).toBe("当前 session 正在工作，新消息已入队。");
+    expect(fixture.telegram.sentMessages[0]?.text).toBe(
+      "The current session is working. Your message has been queued.",
+    );
     expect(fixture.telegram.sentMessages[1]?.text).toContain("[queued] Second prompt");
     expect(fixture.stateStore.listQueueForSession("session-1", 5)[0]?.text).toBe("Second prompt");
   });
@@ -630,26 +632,26 @@ describe("TelegramBridgeService user flows", () => {
       params: {
         threadId: "thread-existing",
         turnId: "turn-plan",
-        explanation: "先拆解任务。",
+        explanation: "Break the task down first.",
         plan: [
-          { step: "检查代码", status: "completed" },
-          { step: "补测试", status: "pending" },
+          { step: "Inspect the code", status: "completed" },
+          { step: "Add tests", status: "pending" },
         ],
       },
     });
     await handleUpdate(fixture, messageUpdate("go ahead"));
     await handleUpdate(fixture, callbackUpdate("plan:approve"));
 
-    expect(fixture.telegram.sentMessages[0]?.text).toContain("需要计划确认：");
-    expect(fixture.telegram.sentMessages[0]?.text).toContain("先拆解任务。");
-    expect(fixture.telegram.sentMessages[1]?.text).toContain("请点 Approve Plan 或 Revise Plan");
+    expect(fixture.telegram.sentMessages[0]?.text).toContain("Plan approval required:");
+    expect(fixture.telegram.sentMessages[0]?.text).toContain("Break the task down first.");
+    expect(fixture.telegram.sentMessages[1]?.text).toContain("Tap Approve Plan or Revise Plan");
     expect(fixture.codex.steeredTurns[0]).toEqual({
       threadId: "thread-existing",
       expectedTurnId: "turn-plan",
       input: "Plan approved. Please proceed to implementation.",
     });
     expect(fixture.registry.getSessionById("session-1")?.status).toBe("working");
-    expect(fixture.telegram.sentMessages[2]?.text).toBe("计划已批准，已进入实现阶段。");
+    expect(fixture.telegram.sentMessages[2]?.text).toBe("Plan approved. Moving to implementation.");
   });
 
   it("collects revise-plan feedback as the next message and steers the active turn", async () => {
@@ -672,20 +674,22 @@ describe("TelegramBridgeService user flows", () => {
       params: {
         threadId: "thread-existing",
         turnId: "turn-plan",
-        plan: [{ step: "补测试", status: "pending" }],
+        plan: [{ step: "Add tests", status: "pending" }],
       },
     });
     await handleUpdate(fixture, callbackUpdate("plan:revise"));
-    await handleUpdate(fixture, messageUpdate("先补用户交互测试，再改实现"));
+    await handleUpdate(fixture, messageUpdate("Add user-flow tests before changing the implementation."));
 
     expect(fixture.stateStore.getChatContext(chatId).composeMode).toBe("none");
     expect(fixture.codex.steeredTurns[0]).toEqual({
       threadId: "thread-existing",
       expectedTurnId: "turn-plan",
-      input: "先补用户交互测试，再改实现",
+      input: "Add user-flow tests before changing the implementation.",
     });
-    expect(fixture.telegram.sentMessages[1]?.text).toBe("已进入 Revise Plan 模式。下一条文本将作为计划反馈。");
-    expect(fixture.telegram.sentMessages[2]?.text).toBe("已提交计划修改意见。");
+    expect(fixture.telegram.sentMessages[1]?.text).toBe(
+      "Entered Revise Plan mode. Your next message will be sent as plan feedback.",
+    );
+    expect(fixture.telegram.sentMessages[2]?.text).toBe("Submitted plan feedback.");
   });
 
   it("collects reply-required input and forwards it to the waiting turn", async () => {
@@ -710,19 +714,21 @@ describe("TelegramBridgeService user flows", () => {
       params: {
         threadId: "thread-existing",
         turnId: "turn-reply",
-        question: "请提供复现步骤",
+        question: "Please provide reproduction steps.",
       },
     });
     await handleUpdate(fixture, callbackUpdate("reply:now"));
-    await handleUpdate(fixture, messageUpdate("打开首页后点击刷新，连续失败两次"));
+    await handleUpdate(fixture, messageUpdate("Open the home page, tap refresh, and it fails twice in a row."));
 
-    expect(fixture.telegram.sentMessages[0]?.text).toBe("需要你的输入：\n请提供复现步骤");
-    expect(fixture.telegram.sentMessages[1]?.text).toBe("已进入 Reply 模式。下一条文本会直接回复当前请求。");
-    expect(fixture.telegram.sentMessages[2]?.text).toBe("已提交输入。");
+    expect(fixture.telegram.sentMessages[0]?.text).toBe("Input required:\nPlease provide reproduction steps.");
+    expect(fixture.telegram.sentMessages[1]?.text).toBe(
+      "Entered Reply mode. Your next message will be sent as a direct reply.",
+    );
+    expect(fixture.telegram.sentMessages[2]?.text).toBe("Submitted input.");
     expect(fixture.codex.steeredTurns[0]).toEqual({
       threadId: "thread-existing",
       expectedTurnId: "turn-reply",
-      input: "打开首页后点击刷新，连续失败两次",
+      input: "Open the home page, tap refresh, and it fails twice in a row.",
     });
     expect(fixture.registry.getSessionById("session-1")?.status).toBe("working");
   });
