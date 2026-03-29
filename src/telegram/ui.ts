@@ -1,4 +1,5 @@
 import type { ConductorSessionRef, TelegramInlineKeyboard, WorkspaceRef } from "../types.js";
+import { formatWorkspaceLabel } from "../utils/text.js";
 
 export function homeKeyboard(): TelegramInlineKeyboard {
   return [
@@ -15,9 +16,16 @@ export function homeKeyboard(): TelegramInlineKeyboard {
 }
 
 export function workspacesKeyboard(workspaces: WorkspaceRef[]): TelegramInlineKeyboard {
+  const repositoryCounts = new Map<string, number>();
+  for (const workspace of workspaces) {
+    repositoryCounts.set(workspace.repositoryName, (repositoryCounts.get(workspace.repositoryName) ?? 0) + 1);
+  }
+
   const rows = workspaces.map((workspace) => [
     {
-      text: workspace.directoryName,
+      text: formatWorkspaceLabel(workspace, {
+        includeDirectory: (repositoryCounts.get(workspace.repositoryName) ?? 0) > 1,
+      }),
       callback_data: `workspace:${workspace.id}`,
     },
   ]);

@@ -16,7 +16,14 @@ import type {
   TelegramMessage,
   TelegramUpdate,
 } from "../types.js";
-import { extractHumanText, formatPlan, formatStatusLine, sanitizeSessionTitle, truncate } from "../utils/text.js";
+import {
+  extractHumanText,
+  formatPlan,
+  formatStatusLine,
+  formatWorkspaceLabel,
+  sanitizeSessionTitle,
+  truncate,
+} from "../utils/text.js";
 import { logger } from "../utils/logger.js";
 
 interface BridgeConfig {
@@ -374,7 +381,11 @@ export class TelegramBridgeService {
 
     const workspace = ctx.activeWorkspaceId ? this.registry.getWorkspaceById(ctx.activeWorkspaceId) : null;
     const session = resolved.session;
-    const statusLine = formatStatusLine(workspace?.directoryName ?? null, session?.title ?? null, session?.status ?? null);
+    const statusLine = formatStatusLine(
+      workspace ? formatWorkspaceLabel(workspace, { includeDirectory: true }) : null,
+      session?.title ?? null,
+      session?.status ?? null,
+    );
 
     const modeText =
       ctx.composeMode === "none"

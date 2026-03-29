@@ -1,3 +1,5 @@
+import type { WorkspaceRef } from "../types.js";
+
 export function truncate(input: string, max = 4000): string {
   if (input.length <= max) {
     return input;
@@ -50,6 +52,27 @@ export function formatStatusLine(
   status: string | null,
 ): string {
   return `${workspaceName ?? "No workspace"} / ${sessionTitle ?? "No session"} / ${status ?? "idle"}`;
+}
+
+export function formatWorkspaceLabel(
+  workspace: Pick<WorkspaceRef, "repositoryName" | "directoryName"> | null | undefined,
+  options?: { includeDirectory?: boolean },
+): string {
+  if (!workspace) {
+    return "No workspace";
+  }
+
+  const repositoryName = workspace.repositoryName.trim();
+  const directoryName = workspace.directoryName.trim();
+  if (!repositoryName) {
+    return directoryName || "No workspace";
+  }
+
+  if (options?.includeDirectory && directoryName && directoryName !== repositoryName) {
+    return `${repositoryName} [${directoryName}]`;
+  }
+
+  return repositoryName;
 }
 
 export function formatPlan(plan: Array<{ step: string; status: string }>, explanation?: string | null): string {
