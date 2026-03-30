@@ -6,30 +6,20 @@ This bridge must run on the same Mac that already has Conductor installed and in
 
 ## Conductor <-> Telegram Mapping
 
-```mermaid
-flowchart LR
-  subgraph C["Conductor on the same Mac"]
-    direction TB
-    repo["Repository"]
-    workspace["Workspace<br/>(branch)"]
-    session["Chat / session"]
-    turns["Codex thread<br/>and turns"]
-    repo --> workspace --> session --> turns
-  end
-
-  subgraph T["Telegram"]
-    direction TB
-    repoPicker["Repo picker"]
-    branchPicker["Branch picker"]
-    chatTarget["Current chat target<br/>(chat or topic)"]
-    messages["Plain-text messages<br/>and streamed updates"]
-    repoPicker --> branchPicker --> chatTarget --> messages
-  end
-
-  repo -. choose repo .-> repoPicker
-  workspace -. choose branch .-> branchPicker
-  session -. continue current chat .-> chatTarget
-  turns -. prompt and output .-> messages
+```text
+Conductor on the same Mac                  Telegram
+-------------------------                  ---------------------------------
+Repository                  <----------->  Repo picker
+    |                                          |
+    v                                          v
+Workspace (branch)          <----------->  Branch picker
+    |                                          |
+    v                                          v
+Chat / session              <----------->  Current chat target
+    |                                          | (private chat or topic)
+    v                                          v
+Codex thread and turns      <----------->  Plain-text messages
+                                            and streamed updates
 ```
 
 - A Conductor repository is the repo you pick in Telegram.
