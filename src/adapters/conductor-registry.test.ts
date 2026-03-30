@@ -74,7 +74,7 @@ function createRegistryFixture(): {
 }
 
 function runGit(args: string[], cwd: string): void {
-  execFileSync("git", args, {
+  execFileSync("git", ["-c", "commit.gpgsign=false", ...args], {
     cwd,
     stdio: "ignore",
   });
@@ -335,6 +335,57 @@ describe("ConductorRegistryAdapter", () => {
       state: "ready",
       initializationParentBranch: "master",
     });
+  });
+
+  it("reads staged, unstaged, and untracked workspace diff state", () => {
+    const { adapter, db, tempDir } = createRegistryFixture();
+    const repositoryName = "telegram-bridge";
+    const sourceRepoPath = path.join(tempDir, "source-repo");
+    const workspacePath = path.join(tempDir, "workspaces", repositoryName, "diff-workspace");
+
+    fs.mkdirSync(sourceRepoPath, { recursive: true });
+    fs.mkdirSync(path.dirname(workspacePath), { recursive: true });
+
+    runGit(["init", "--initial-branch=master"], sourceRepoPath);
+    runGit(["config", "user.name", "Test User"], sourceRepoPath);
+    runGit(["config", "user.email", "test@example.com"], sourceRepoPath);
+
+    fs.writeFileSync(path.join(sourceRepoPath, "README.md"), "initial\n", "utf8");
+    runGit(["add", "README.md"], sourceRepoPath);
+    runGit(["commit", "-m", "initial"], sourceRepoPath);
+
+    runGit(["worktree", "add", "--detach", workspacePath, "master"], sourceRepoPath);
+
+    fs.writeFileSync(path.join(workspacePath, "README.md"), "initial\nupdated\n", "utf8");
+    fs.writeFileSync(path.join(workspacePath, "staged.txt"), "staged\n", "utf8");
+    fs.writeFileSync(path.join(workspacePath, "untracked.txt"), "untracked\n", "utf8");
+    runGit(["add", "staged.txt"], workspacePath);
+
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", repositoryName, sourceRepoPath, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
+    db.prepare(
+      `
+        INSERT INTO workspaces (
+          id,
+          repository_id,
+          directory_name,
+          branch,
+          pr_title,
+          archive_commit,
+          active_session_id,
+          updated_at,
+          state
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+    ).run("workspace-1", "repo-1", "diff-workspace", "master", null, null, null, "2026-03-29T04:00:00.000Z", "ready");
+
+    const snapshot = adapter.getWorkspaceDiffSnapshot("workspace-1");
+
+    expect(snapshot.workspacePath).toBe(workspacePath);
+    expect(snapshot.statusLines).toEqual(expect.arrayContaining([" M README.md", "A  staged.txt", "?? untracked.txt"]));
+    expect(snapshot.unstagedDiff).toContain("diff --git a/README.md b/README.md");
+    expect(snapshot.stagedDiff).toContain("diff --git a/staged.txt b/staged.txt");
   });
 
   it("allocates a versioned directory name when the branch tail is already taken", () => {

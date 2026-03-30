@@ -30,6 +30,7 @@ function createBridge() {
     createWorkspace: vi.fn(),
     findWorkspaceByBranch: vi.fn(),
     getRepositoryById: vi.fn(),
+    getWorkspaceDiffSnapshot: vi.fn(),
     findSessionByThreadId: vi.fn(),
     getSessionById: vi.fn(),
     updateWorkspaceActiveSession: vi.fn(),
@@ -55,6 +56,7 @@ function createBridge() {
   const telegram = {
     answerCallbackQuery: vi.fn().mockResolvedValue(undefined),
     createForumTopic: vi.fn(),
+    deleteMessage: vi.fn().mockResolvedValue(undefined),
     editMessageText: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue(null),
   };
@@ -330,6 +332,75 @@ describe("TelegramConductorBridge", () => {
     );
     expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Current queue:");
     expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("queued · continue");
+  });
+
+  it("opens a diff viewer for the current workspace", async () => {
+    const { bridge, registry, stateStore, telegram } = createBridge();
+
+    telegram.sendMessage.mockResolvedValueOnce(123);
+    stateStore.getConversationContext.mockReturnValue({
+      activeSessionId: "session-1",
+      activeWorkspaceId: "workspace-1",
+      chatId: 12,
+      composeMode: "none",
+      composeTargetSessionId: null,
+      composeTargetThreadId: null,
+      composeTargetTurnId: null,
+      composeWorkspaceId: null,
+      followSessionId: "session-1",
+      messageThreadId: null,
+      updatedAt: "2026-03-29T14:57:38.107Z",
+    });
+    registry.getWorkspaceById.mockReturnValue({
+      id: "workspace-1",
+      branch: "xudong963/investigate-freeze",
+      directoryName: "krakow",
+      repositoryId: "repo-1",
+      activeSessionId: "session-1",
+      updatedAt: "2026-03-29 14:57:38",
+      rootPath: "/tmp/source-repo",
+      repositoryName: "conductor_mobile",
+    });
+    registry.getWorkspaceDiffSnapshot.mockReturnValue({
+      stagedDiff:
+        "diff --git a/staged.txt b/staged.txt\nnew file mode 100644\n+++ b/staged.txt\n@@ -0,0 +1 @@\n+ready\n",
+      statusLines: [" M src/index.ts", "A  staged.txt"],
+      unstagedDiff:
+        "diff --git a/src/index.ts b/src/index.ts\n--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1 +1 @@\n-old\n+new\n",
+      workspacePath: "/tmp/workspaces/conductor_mobile/krakow",
+    });
+
+    await (
+      bridge as unknown as {
+        showDiff: (location: { chatId: number; messageThreadId: number | null }) => Promise<void>;
+      }
+    ).showDiff({ chatId: 12, messageThreadId: null });
+
+    expect(telegram.sendMessage).toHaveBeenCalledWith(
+      12,
+      expect.stringContaining("Diff: conductor_mobile / xudong963/investigate-freeze"),
+      expect.objectContaining({
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "1. [U] src/index.ts", callback_data: "diff:file-jump:1" },
+              { text: "2. [S] staged.txt", callback_data: "diff:file-jump:2" },
+            ],
+            [
+              { text: "Refresh", callback_data: "diff:refresh" },
+              { text: "Close", callback_data: "diff:close" },
+            ],
+          ],
+        },
+      }),
+    );
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Changed files: 2");
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("View: Summary");
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("File buttons 1-2 of 2");
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain(
+      "File button tags: [U] unstaged, [S] staged, [US] both, [?] untracked-only",
+    );
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Status:");
   });
 
   it("treats short status probes as status checks instead of chat input", async () => {
@@ -724,5 +795,303 @@ describe("TelegramConductorBridge", () => {
 
     expect(telegram.editMessageText).not.toHaveBeenCalled();
     expect(telegram.answerCallbackQuery).toHaveBeenCalledWith("callback-1", "Already at the oldest page.");
+  });
+
+  it("does not re-edit the diff viewer when paging stays at the first page", async () => {
+    const { bridge, telegram } = createBridge();
+
+    const viewer = {
+      changedFileCount: 1,
+      fileButtonPageIndex: 0,
+      fileMode: "all" as const,
+      entries: [{ key: "summary", kind: "summary", label: "Summary", pages: ["Status:\n M src/index.ts"] }],
+      entryIndex: 0,
+      keyboardFingerprint: null as string | null,
+      lastText: null as string | null,
+      location: { chatId: 99, messageThreadId: null },
+      messageId: 654,
+      pageIndex: 0,
+      workspaceId: "workspace-1",
+      workspaceLabel: "conductor_mobile / xudong963/investigate-freeze",
+    };
+
+    viewer.lastText = (
+      bridge as unknown as {
+        renderDiffViewerText: (state: unknown) => string;
+      }
+    ).renderDiffViewerText(viewer);
+    viewer.keyboardFingerprint = JSON.stringify(
+      (
+        bridge as unknown as {
+          diffViewerKeyboard: (state: unknown) => unknown;
+        }
+      ).diffViewerKeyboard(viewer),
+    );
+
+    (
+      bridge as unknown as {
+        diffViewers: Map<string, unknown>;
+      }
+    ).diffViewers.set("99:0", viewer);
+
+    await (
+      bridge as unknown as {
+        handleDiffViewerCallback: (
+          callback: {
+            id: string;
+            message: { message_id: number };
+          },
+          location: { chatId: number; messageThreadId: number | null },
+          data: string,
+        ) => Promise<void>;
+      }
+    ).handleDiffViewerCallback(
+      {
+        id: "callback-1",
+        message: { message_id: 654 },
+      },
+      { chatId: 99, messageThreadId: null },
+      "diff:file-prev",
+    );
+
+    expect(telegram.editMessageText).not.toHaveBeenCalled();
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith("callback-1", "Already at the summary.");
+  });
+
+  it("jumps from the summary to the next diff file", async () => {
+    const { bridge, telegram } = createBridge();
+
+    const viewer = {
+      changedFileCount: 2,
+      fileButtonPageIndex: 0,
+      fileMode: "all" as const,
+      entries: [
+        { key: "summary", kind: "summary", label: "Summary", pages: ["Status:\n M src/index.ts\nA  staged.txt"] },
+        {
+          badgeText: "U",
+          hasStaged: false,
+          hasUnstaged: true,
+          key: "src/index.ts",
+          kind: "file",
+          label: "src/index.ts",
+          pagesByMode: {
+            all: ["Path: src/index.ts\n\nUnstaged changes\n\ndiff --git a/src/index.ts b/src/index.ts"],
+            staged: null,
+            unstaged: ["Path: src/index.ts\n\nUnstaged changes\n\ndiff --git a/src/index.ts b/src/index.ts"],
+          },
+        },
+      ],
+      entryIndex: 0,
+      keyboardFingerprint: null as string | null,
+      lastText: null as string | null,
+      location: { chatId: 99, messageThreadId: null },
+      messageId: 654,
+      pageIndex: 0,
+      workspaceId: "workspace-1",
+      workspaceLabel: "conductor_mobile / xudong963/investigate-freeze",
+    };
+
+    (
+      bridge as unknown as {
+        diffViewers: Map<string, unknown>;
+      }
+    ).diffViewers.set("99:0", viewer);
+
+    await (
+      bridge as unknown as {
+        handleDiffViewerCallback: (
+          callback: {
+            id: string;
+            message: { message_id: number };
+          },
+          location: { chatId: number; messageThreadId: number | null },
+          data: string,
+        ) => Promise<void>;
+      }
+    ).handleDiffViewerCallback(
+      {
+        id: "callback-2",
+        message: { message_id: 654 },
+      },
+      { chatId: 99, messageThreadId: null },
+      "diff:file-next",
+    );
+
+    expect(telegram.editMessageText).toHaveBeenCalledWith(99, 654, expect.stringContaining("File 1/1: src/index.ts"), [
+      [
+        { text: "Prev File", callback_data: "diff:file-prev" },
+        { text: "Summary", callback_data: "diff:summary" },
+      ],
+      [
+        { text: "Refresh", callback_data: "diff:refresh" },
+        { text: "Close", callback_data: "diff:close" },
+      ],
+    ]);
+  });
+
+  it("jumps from the summary to a selected diff file button", async () => {
+    const { bridge, telegram } = createBridge();
+
+    const viewer = {
+      changedFileCount: 3,
+      fileButtonPageIndex: 0,
+      fileMode: "all" as const,
+      entries: [
+        {
+          key: "summary",
+          kind: "summary",
+          label: "Summary",
+          pages: ["Status:\n M src/index.ts\nA  staged.txt\n?? notes.txt"],
+        },
+        {
+          badgeText: "U",
+          hasStaged: false,
+          hasUnstaged: true,
+          key: "src/index.ts",
+          kind: "file",
+          label: "src/index.ts",
+          pagesByMode: {
+            all: ["Path: src/index.ts\n\nUnstaged changes"],
+            staged: null,
+            unstaged: ["Path: src/index.ts\n\nUnstaged changes"],
+          },
+        },
+        {
+          badgeText: "S",
+          hasStaged: true,
+          hasUnstaged: false,
+          key: "staged.txt",
+          kind: "file",
+          label: "staged.txt",
+          pagesByMode: {
+            all: ["Path: staged.txt\n\nStaged changes"],
+            staged: ["Path: staged.txt\n\nStaged changes"],
+            unstaged: null,
+          },
+        },
+      ],
+      entryIndex: 0,
+      keyboardFingerprint: null as string | null,
+      lastText: null as string | null,
+      location: { chatId: 99, messageThreadId: null },
+      messageId: 777,
+      pageIndex: 0,
+      workspaceId: "workspace-1",
+      workspaceLabel: "conductor_mobile / xudong963/investigate-freeze",
+    };
+
+    (
+      bridge as unknown as {
+        diffViewers: Map<string, unknown>;
+      }
+    ).diffViewers.set("99:0", viewer);
+
+    await (
+      bridge as unknown as {
+        handleDiffViewerCallback: (
+          callback: {
+            id: string;
+            message: { message_id: number };
+          },
+          location: { chatId: number; messageThreadId: number | null },
+          data: string,
+        ) => Promise<void>;
+      }
+    ).handleDiffViewerCallback(
+      {
+        id: "callback-3",
+        message: { message_id: 777 },
+      },
+      { chatId: 99, messageThreadId: null },
+      "diff:file-jump:2",
+    );
+
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith("callback-3");
+    expect(telegram.editMessageText).toHaveBeenCalledWith(99, 777, expect.stringContaining("File 2/2: staged.txt"), [
+      [
+        { text: "Prev File", callback_data: "diff:file-prev" },
+        { text: "Summary", callback_data: "diff:summary" },
+      ],
+      [
+        { text: "Refresh", callback_data: "diff:refresh" },
+        { text: "Close", callback_data: "diff:close" },
+      ],
+    ]);
+  });
+
+  it("switches the current diff file to staged-only mode", async () => {
+    const { bridge, telegram } = createBridge();
+
+    const viewer = {
+      changedFileCount: 1,
+      fileButtonPageIndex: 0,
+      fileMode: "all" as const,
+      entries: [
+        { key: "summary", kind: "summary", label: "Summary", pages: ["Status:\nMM src/index.ts"] },
+        {
+          badgeText: "US",
+          hasStaged: true,
+          hasUnstaged: true,
+          key: "src/index.ts",
+          kind: "file",
+          label: "src/index.ts",
+          pagesByMode: {
+            all: ["Path: src/index.ts\n\nUnstaged changes\n\nu\n\nStaged changes\n\ns"],
+            staged: ["Path: src/index.ts\n\nStaged changes\n\ns"],
+            unstaged: ["Path: src/index.ts\n\nUnstaged changes\n\nu"],
+          },
+        },
+      ],
+      entryIndex: 1,
+      keyboardFingerprint: null as string | null,
+      lastText: null as string | null,
+      location: { chatId: 99, messageThreadId: null },
+      messageId: 778,
+      pageIndex: 0,
+      workspaceId: "workspace-1",
+      workspaceLabel: "conductor_mobile / xudong963/investigate-freeze",
+    };
+
+    (
+      bridge as unknown as {
+        diffViewers: Map<string, unknown>;
+      }
+    ).diffViewers.set("99:0", viewer);
+
+    await (
+      bridge as unknown as {
+        handleDiffViewerCallback: (
+          callback: {
+            id: string;
+            message: { message_id: number };
+          },
+          location: { chatId: number; messageThreadId: number | null },
+          data: string,
+        ) => Promise<void>;
+      }
+    ).handleDiffViewerCallback(
+      {
+        id: "callback-4",
+        message: { message_id: 778 },
+      },
+      { chatId: 99, messageThreadId: null },
+      "diff:mode:staged",
+    );
+
+    expect(telegram.editMessageText).toHaveBeenCalledWith(99, 778, expect.stringContaining("Patch view: Staged only"), [
+      [
+        { text: "Prev File", callback_data: "diff:file-prev" },
+        { text: "Summary", callback_data: "diff:summary" },
+      ],
+      [
+        { text: "All", callback_data: "diff:mode:all" },
+        { text: "Unstaged", callback_data: "diff:mode:unstaged" },
+        { text: "> Staged", callback_data: "diff:mode:staged" },
+      ],
+      [
+        { text: "Refresh", callback_data: "diff:refresh" },
+        { text: "Close", callback_data: "diff:close" },
+      ],
+    ]);
   });
 });

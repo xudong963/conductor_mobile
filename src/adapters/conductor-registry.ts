@@ -8,6 +8,7 @@ import type {
   ConductorSessionRef,
   RepositoryRef,
   SessionDefaults,
+  WorkspaceDiffSnapshot,
   SessionMessageRecord,
   SessionSeed,
   SessionStatus,
@@ -442,8 +443,54 @@ export class ConductorRegistryAdapter {
     return this.resolveWorkspaceDirectoryPath(workspace);
   }
 
+  getWorkspaceDiffSnapshot(workspaceId: string): WorkspaceDiffSnapshot {
+    const workspace = this.getWorkspaceById(workspaceId);
+    if (!workspace) {
+      throw new Error(`Workspace ${workspaceId} not found.`);
+    }
+
+    const workspacePath = this.resolveWorkspaceDirectoryPath(workspace);
+    if (!fs.existsSync(workspacePath)) {
+      throw new Error(`Workspace path does not exist: ${workspacePath}`);
+    }
+
+    const statusOutput = this.readGitOutput(workspacePath, ["status", "--short", "--untracked-files=all"]);
+    const unstagedDiff = this.readGitOutput(workspacePath, ["diff", "--no-ext-diff", "--minimal", "--no-color"]);
+    const stagedDiff = this.readGitOutput(workspacePath, [
+      "diff",
+      "--cached",
+      "--no-ext-diff",
+      "--minimal",
+      "--no-color",
+    ]);
+
+    return {
+      stagedDiff: stagedDiff.trim(),
+      statusLines: statusOutput
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter(Boolean),
+      unstagedDiff: unstagedDiff.trim(),
+      workspacePath,
+    };
+  }
+
   private resolveWorkspaceDirectoryPath(workspace: Pick<WorkspaceRef, "repositoryName" | "directoryName">): string {
     return path.join(this.workspacesRoot, workspace.repositoryName, workspace.directoryName);
+  }
+
+  private readGitOutput(workspacePath: string, args: string[]): string {
+    try {
+      return execFileSync("git", ["-C", workspacePath, ...args], {
+        encoding: "utf8",
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    } catch (error) {
+      throw new Error(
+        `Failed to read git state for ${workspacePath}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
   }
 
   private shouldHideWorkspaceFromRepositoryBranches(

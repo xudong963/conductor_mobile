@@ -109,6 +109,13 @@ export interface SessionDefaults {
   permissionMode: string;
 }
 
+export interface WorkspaceDiffSnapshot {
+  stagedDiff: string;
+  statusLines: string[];
+  unstagedDiff: string;
+  workspacePath: string;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;

@@ -15,6 +15,7 @@ The current version supports:
 - Basic queueing
 - Streamed text updates inside dedicated Telegram topics
 - A single-message paginated context viewer
+- A single-message paginated workspace diff viewer
 - Basic `requestUserInput` and plan feedback flows
 - Telegram slash command syncing
 
@@ -76,6 +77,7 @@ npm run dev
 - `/status`: open or refresh the current chat's status panel
 - `/stop`: interrupt the current turn
 - `/queue`: inspect the current chat queue
+- `/diff`: open a paginated diff viewer for the current branch workspace
 - `/context [N]`: open a paginated single-message context viewer with older/newer, refresh, and close controls
 - `/new`: make the next plain-text message create a new chat on the current branch
 - `/new_workspace`: make the next plain-text message create a new workspace in the current repo
@@ -114,10 +116,11 @@ Create a new workspace:
 ## Output Model
 
 - `/status` creates or refreshes a reusable status panel when you want a compact status view.
+- `/diff` opens a reusable diff card for the selected branch workspace, with summary-level file buttons, staged/unstaged markers, file-level patch filters, paging, refresh, and close controls.
 - `/context [N]` opens a separate context preview card; paging and refresh actions only update that single message.
 - In topic-enabled chats, each Conductor chat streams as a normal assistant message inside its dedicated topic instead of using the status panel.
 - The context preview stays scoped to the current topic instead of the whole Telegram chat.
-- Both the status panel and the context preview can be closed to keep the Telegram chat tidy.
+- Both the status panel, the diff card, and the context preview can be closed to keep the Telegram chat tidy.
 
 ## Notes
 

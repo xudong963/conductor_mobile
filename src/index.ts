@@ -30,6 +30,7 @@ import type {
   TelegramInlineKeyboard,
   TelegramMessage,
   TelegramUpdate,
+  WorkspaceDiffSnapshot,
   WorkspaceRef,
 } from "./types.js";
 import { logger } from "./utils/logger.js";
@@ -77,6 +78,46 @@ interface ContextViewerState {
   sessionId: string;
   sessionTitle: string;
 }
+
+interface DiffViewerState {
+  changedFileCount: number;
+  entries: DiffViewerEntry[];
+  entryIndex: number;
+  fileButtonPageIndex: number;
+  fileMode: DiffViewerFileMode;
+  keyboardFingerprint: string | null;
+  lastText: string | null;
+  location: TelegramConversationTarget;
+  messageId: number | null;
+  pageIndex: number;
+  workspaceId: string;
+  workspaceLabel: string;
+}
+
+type DiffViewerFileMode = "all" | "unstaged" | "staged";
+
+interface DiffViewerSummaryEntry {
+  key: string;
+  kind: "summary";
+  label: string;
+  pages: string[];
+}
+
+interface DiffViewerFileEntry {
+  badgeText: string | null;
+  hasStaged: boolean;
+  hasUnstaged: boolean;
+  key: string;
+  kind: "file";
+  label: string;
+  pagesByMode: {
+    all: string[];
+    staged: string[] | null;
+    unstaged: string[] | null;
+  };
+}
+
+type DiffViewerEntry = DiffViewerSummaryEntry | DiffViewerFileEntry;
 
 interface SessionPanelState {
   keyboardFingerprint: string;
@@ -257,6 +298,7 @@ const BOT_COMMANDS: TelegramBotCommand[] = [
   { command: "status", description: "Refresh the current status panel" },
   { command: "stop", description: "Interrupt the current turn" },
   { command: "queue", description: "Show the current chat queue" },
+  { command: "diff", description: "Open the current workspace diff" },
   { command: "context", description: "Open the recent context viewer" },
   { command: "new", description: "Create a new chat with the next message" },
   { command: "new_workspace", description: "Create a new workspace from the next message" },
@@ -265,6 +307,8 @@ const BOT_COMMANDS: TelegramBotCommand[] = [
 
 const STREAM_EDIT_INTERVAL_MS = 400;
 const STREAM_EAGER_EDIT_CHARS = 120;
+const DIFF_FILE_BUTTONS_PER_PAGE = 6;
+const DIFF_FILE_BUTTONS_PER_ROW = 3;
 
 function buildHelpText(): string {
   return [
@@ -278,6 +322,7 @@ function buildHelpText(): string {
     "/status  Open or refresh the current status panel",
     "/stop  Interrupt the current turn",
     "/queue  Show the current chat queue",
+    "/diff  Open the paginated current workspace diff",
     "/context [N]  Open the paginated recent context viewer",
     "/new  Make the next message create a new chat on the current branch",
     "/new_workspace  Make the next message create a new workspace in the current repo",
@@ -300,6 +345,7 @@ export class TelegramConductorBridge {
   private readonly pendingInputRequests = new Map<string, PendingInputRequest>();
   private readonly sessionIdByThreadId = new Map<string, string>();
   private readonly contextViewers = new Map<string, ContextViewerState>();
+  private readonly diffViewers = new Map<string, DiffViewerState>();
   private readonly sessionPanels = new Map<string, SessionPanelState>();
   private readonly sessionPanelQueue = new KeyedSerialTaskQueue<string>();
   private readonly sessionStreams = new Map<string, SessionStreamState>();
@@ -468,6 +514,11 @@ export class TelegramConductorBridge {
     }
 
     const data = callback.data ?? "";
+
+    if (data.startsWith("diff:")) {
+      await this.handleDiffViewerCallback(callback, location, data);
+      return;
+    }
 
     if (data.startsWith("context:")) {
       await this.handleContextViewerCallback(callback, location, data);
@@ -658,6 +709,9 @@ export class TelegramConductorBridge {
         return;
       case "/queue":
         await this.showQueue(location);
+        return;
+      case "/diff":
+        await this.showDiff(location);
         return;
       case "/context":
         await this.showContext(location, rawCommand);
@@ -1158,6 +1212,49 @@ export class TelegramConductorBridge {
     viewer.pageIndex = Math.max(0, viewer.pages.length - 1);
     this.contextViewers.set(key, viewer);
     await this.renderContextViewer(viewer);
+  }
+
+  private async showDiff(location: TelegramConversationTarget): Promise<void> {
+    const context = this.stateStore.getConversationContext(location);
+    if (!context.activeWorkspaceId) {
+      await this.safeSendMessage(location, "Select a branch first.");
+      return;
+    }
+
+    const workspace = this.registry.getWorkspaceById(context.activeWorkspaceId);
+    if (!workspace) {
+      await this.safeSendMessage(location, "Select a branch first.");
+      return;
+    }
+
+    let snapshot: WorkspaceDiffSnapshot;
+    try {
+      snapshot = this.registry.getWorkspaceDiffSnapshot(workspace.id);
+    } catch (error) {
+      await this.safeSendMessage(location, `Failed to read the workspace diff: ${extractErrorMessage(error)}`);
+      return;
+    }
+
+    const key = conversationKey(location);
+    const existing = this.diffViewers.get(key);
+    const entries = this.buildDiffViewerEntries(snapshot);
+    const viewer: DiffViewerState = {
+      changedFileCount: snapshot.statusLines.length,
+      entries,
+      entryIndex: 0,
+      fileButtonPageIndex: existing?.fileButtonPageIndex ?? 0,
+      fileMode: "all",
+      keyboardFingerprint: existing?.keyboardFingerprint ?? null,
+      lastText: existing?.lastText ?? null,
+      location,
+      messageId: existing?.messageId ?? null,
+      pageIndex: 0,
+      workspaceId: workspace.id,
+      workspaceLabel: `${formatRepositoryLabel(workspace)} / ${formatBranchName(workspace)}`,
+    };
+    viewer.fileButtonPageIndex = this.clampDiffViewerFileButtonPageIndex(viewer, viewer.fileButtonPageIndex);
+    this.diffViewers.set(key, viewer);
+    await this.renderDiffViewer(viewer);
   }
 
   private shouldQueueSession(session: ConductorSessionRef): boolean {
@@ -2339,6 +2436,10 @@ export class TelegramConductorBridge {
     }
 
     switch (data) {
+      case "panel:diff":
+        await this.telegram.answerCallbackQuery(callback.id);
+        await this.showDiff(location);
+        return;
       case "panel:refresh":
         await this.telegram.answerCallbackQuery(callback.id, "Refreshing...");
         await this.renderSessionPanel(location);
@@ -2401,7 +2502,7 @@ export class TelegramConductorBridge {
       lines.push(`Topic: ${location.messageThreadId}`);
     }
     const text = truncate(`${lines.join("\n")}\n\n${body}`, 3800);
-    const keyboard = this.sessionPanelKeyboard(options?.keyboard, this.canInterruptTurn(runtime));
+    const keyboard = this.sessionPanelKeyboard(options?.keyboard, this.canInterruptTurn(runtime), Boolean(workspace));
     await this.upsertSessionPanel(location, session?.id ?? null, text, keyboard);
   }
 
@@ -2559,10 +2660,17 @@ export class TelegramConductorBridge {
     return preview ?? "Waiting for new messages.";
   }
 
-  private sessionPanelKeyboard(extraKeyboard?: TelegramInlineKeyboard, showInterrupt = false): TelegramInlineKeyboard {
+  private sessionPanelKeyboard(
+    extraKeyboard?: TelegramInlineKeyboard,
+    showInterrupt = false,
+    showDiff = false,
+  ): TelegramInlineKeyboard {
     const keyboard = extraKeyboard ? extraKeyboard.map((row) => [...row]) : [];
     if (showInterrupt) {
       keyboard.push([{ text: "Stop Current Turn", callback_data: "panel:interrupt" }]);
+    }
+    if (showDiff) {
+      keyboard.push([{ text: "View Diff", callback_data: "panel:diff" }]);
     }
     keyboard.push([
       { text: "Refresh Status", callback_data: "panel:refresh" },
@@ -2696,6 +2804,661 @@ export class TelegramConductorBridge {
     await this.renderContextViewer(viewer);
     if (notice && data !== "context:refresh") {
       await this.telegram.answerCallbackQuery(callback.id, notice);
+    }
+  }
+
+  private async handleDiffViewerCallback(
+    callback: TelegramCallbackQuery,
+    location: TelegramConversationTarget,
+    data: string,
+  ): Promise<void> {
+    const messageId = callback.message?.message_id;
+    const viewer = this.diffViewers.get(conversationKey(location));
+
+    if (!messageId || !viewer || viewer.messageId !== messageId) {
+      await this.telegram.answerCallbackQuery(callback.id, "That diff viewer is no longer active.");
+      return;
+    }
+
+    let notice: string | undefined;
+    if (data.startsWith("diff:file-jump:")) {
+      const rawIndex = data.slice("diff:file-jump:".length);
+      const entryIndex = Number.parseInt(rawIndex, 10);
+      if (!Number.isInteger(entryIndex) || entryIndex <= 0 || entryIndex >= viewer.entries.length) {
+        await this.telegram.answerCallbackQuery(callback.id, "That file is no longer available.");
+        return;
+      }
+      viewer.entryIndex = entryIndex;
+      viewer.pageIndex = 0;
+      viewer.fileButtonPageIndex = this.diffViewerFileButtonPageIndexForEntry(entryIndex);
+      viewer.fileMode = this.defaultDiffViewerFileMode(this.currentDiffViewerEntry(viewer));
+      await this.telegram.answerCallbackQuery(callback.id);
+      await this.renderDiffViewer(viewer);
+      return;
+    }
+
+    switch (data) {
+      case "diff:file-buttons-prev":
+        if (viewer.fileButtonPageIndex > 0) {
+          viewer.fileButtonPageIndex -= 1;
+        } else {
+          notice = "Already at the first file set.";
+        }
+        break;
+      case "diff:file-buttons-next":
+        if (viewer.fileButtonPageIndex < this.diffViewerFileButtonPageCount(viewer) - 1) {
+          viewer.fileButtonPageIndex += 1;
+        } else {
+          notice = "Already at the last file set.";
+        }
+        break;
+      case "diff:file-prev":
+        if (viewer.entryIndex > 0) {
+          viewer.entryIndex -= 1;
+          viewer.pageIndex = 0;
+          viewer.fileButtonPageIndex = this.diffViewerFileButtonPageIndexForEntry(viewer.entryIndex);
+          viewer.fileMode = this.defaultDiffViewerFileMode(this.currentDiffViewerEntry(viewer));
+        } else {
+          notice = "Already at the summary.";
+        }
+        break;
+      case "diff:file-next":
+        if (viewer.entryIndex < viewer.entries.length - 1) {
+          viewer.entryIndex += 1;
+          viewer.pageIndex = 0;
+          viewer.fileButtonPageIndex = this.diffViewerFileButtonPageIndexForEntry(viewer.entryIndex);
+          viewer.fileMode = this.defaultDiffViewerFileMode(this.currentDiffViewerEntry(viewer));
+        } else {
+          notice = "Already at the last file.";
+        }
+        break;
+      case "diff:summary":
+        if (viewer.entryIndex !== 0) {
+          viewer.entryIndex = 0;
+          viewer.pageIndex = 0;
+          viewer.fileMode = "all";
+        } else {
+          notice = "Already at the summary.";
+        }
+        break;
+      case "diff:mode:all":
+      case "diff:mode:unstaged":
+      case "diff:mode:staged": {
+        const entry = this.currentDiffViewerEntry(viewer);
+        if (!entry || entry.kind !== "file") {
+          notice = "Open a file first.";
+          break;
+        }
+        const nextMode = data.slice("diff:mode:".length) as DiffViewerFileMode;
+        const normalizedMode = this.normalizeDiffViewerFileMode(entry, nextMode);
+        if (normalizedMode === viewer.fileMode) {
+          notice =
+            normalizedMode === "all"
+              ? "Already showing all changes."
+              : normalizedMode === "staged"
+                ? "Already showing staged changes."
+                : "Already showing unstaged changes.";
+          break;
+        }
+        viewer.fileMode = normalizedMode;
+        viewer.pageIndex = 0;
+        break;
+      }
+      case "diff:page-prev":
+        if (viewer.pageIndex > 0) {
+          viewer.pageIndex -= 1;
+        } else {
+          notice = "Already at the first page.";
+        }
+        break;
+      case "diff:page-next": {
+        if (viewer.pageIndex < this.currentDiffViewerPages(viewer).length - 1) {
+          viewer.pageIndex += 1;
+        } else {
+          notice = "Already at the last page.";
+        }
+        break;
+      }
+      case "diff:refresh":
+        await this.telegram.answerCallbackQuery(callback.id, "Refreshing...");
+        notice = await this.refreshDiffViewer(viewer);
+        break;
+      case "diff:close":
+        await this.telegram.answerCallbackQuery(callback.id);
+        await this.closeDiffViewer(viewer);
+        return;
+      default:
+        await this.telegram.answerCallbackQuery(callback.id, "Not implemented yet");
+        return;
+    }
+
+    await this.renderDiffViewer(viewer);
+    if (notice && data !== "diff:refresh") {
+      await this.telegram.answerCallbackQuery(callback.id, notice);
+    }
+  }
+
+  private async refreshDiffViewer(viewer: DiffViewerState): Promise<string | undefined> {
+    const workspace = this.registry.getWorkspaceById(viewer.workspaceId);
+    if (!workspace) {
+      return "That branch no longer exists.";
+    }
+
+    let snapshot: WorkspaceDiffSnapshot;
+    try {
+      snapshot = this.registry.getWorkspaceDiffSnapshot(viewer.workspaceId);
+    } catch (error) {
+      return `Refresh failed: ${extractErrorMessage(error)}`;
+    }
+
+    const currentEntryKey = this.currentDiffViewerEntry(viewer)?.key ?? "summary";
+    const currentPageIndex = viewer.pageIndex;
+    const currentFileMode = viewer.fileMode;
+
+    viewer.changedFileCount = snapshot.statusLines.length;
+    viewer.entries = this.buildDiffViewerEntries(snapshot);
+    viewer.entryIndex = Math.max(
+      0,
+      viewer.entries.findIndex((entry) => entry.key === currentEntryKey),
+    );
+    viewer.fileMode = this.normalizeDiffViewerFileMode(this.currentDiffViewerEntry(viewer), currentFileMode);
+    viewer.pageIndex = Math.min(currentPageIndex, this.currentDiffViewerPages(viewer).length - 1);
+    viewer.fileButtonPageIndex = this.clampDiffViewerFileButtonPageIndex(
+      viewer,
+      this.diffViewerFileButtonPageIndexForEntry(viewer.entryIndex),
+    );
+    viewer.workspaceLabel = `${formatRepositoryLabel(workspace)} / ${formatBranchName(workspace)}`;
+    return "Refreshed.";
+  }
+
+  private buildDiffViewerEntries(snapshot: WorkspaceDiffSnapshot): DiffViewerEntry[] {
+    const fileEntries = this.buildDiffFileEntries(snapshot);
+    return [
+      {
+        key: "summary",
+        kind: "summary",
+        label: "Summary",
+        pages: this.paginateViewerSections([this.renderDiffSummary(snapshot, fileEntries)], 3200),
+      },
+      ...fileEntries,
+    ];
+  }
+
+  private renderDiffSummary(snapshot: WorkspaceDiffSnapshot, fileEntries: DiffViewerFileEntry[]): string {
+    const lines = [
+      `Workspace: ${snapshot.workspacePath}`,
+      `Changed files: ${snapshot.statusLines.length}`,
+      `Files with viewer entries: ${fileEntries.length}`,
+      "",
+      "Status:",
+    ];
+
+    if (snapshot.statusLines.length > 0) {
+      lines.push(...snapshot.statusLines);
+    } else {
+      lines.push("Working tree is clean.");
+    }
+
+    if (fileEntries.length > 0) {
+      lines.push("", "File button tags: [U] unstaged, [S] staged, [US] both, [?] untracked-only");
+    }
+
+    if (!snapshot.stagedDiff && !snapshot.unstagedDiff && snapshot.statusLines.length > 0) {
+      lines.push("", "Tracked patch: none", "Only untracked or ignored files are present.");
+    }
+
+    return lines.join("\n");
+  }
+
+  private buildDiffFileEntries(snapshot: WorkspaceDiffSnapshot): DiffViewerFileEntry[] {
+    interface DiffFileDraft {
+      key: string;
+      label: string;
+      stagedPatch: string | null;
+      statusLines: string[];
+      unstagedPatch: string | null;
+    }
+
+    const drafts: DiffFileDraft[] = [];
+    const draftByKey = new Map<string, DiffFileDraft>();
+    const ensureDraft = (key: string, label: string): DiffFileDraft => {
+      const existing = draftByKey.get(key);
+      if (existing) {
+        return existing;
+      }
+      const created: DiffFileDraft = {
+        key,
+        label,
+        stagedPatch: null,
+        statusLines: [],
+        unstagedPatch: null,
+      };
+      draftByKey.set(key, created);
+      drafts.push(created);
+      return created;
+    };
+
+    for (const statusLine of snapshot.statusLines) {
+      const parsed = this.parseDiffStatusLine(statusLine);
+      if (!parsed) {
+        continue;
+      }
+      ensureDraft(parsed.key, parsed.label).statusLines.push(statusLine);
+    }
+
+    for (const block of this.splitDiffBlocks(snapshot.unstagedDiff)) {
+      const parsed = this.parseDiffBlockLabel(block);
+      const draft = ensureDraft(parsed.key, parsed.label);
+      draft.unstagedPatch = draft.unstagedPatch ? `${draft.unstagedPatch}\n\n${block}` : block;
+    }
+
+    for (const block of this.splitDiffBlocks(snapshot.stagedDiff)) {
+      const parsed = this.parseDiffBlockLabel(block);
+      const draft = ensureDraft(parsed.key, parsed.label);
+      draft.stagedPatch = draft.stagedPatch ? `${draft.stagedPatch}\n\n${block}` : block;
+    }
+
+    return drafts.map((draft) => {
+      const headerSections = [`Path: ${draft.label}`];
+      if (draft.statusLines.length > 0) {
+        headerSections.push(["Status:", ...draft.statusLines].join("\n"));
+      }
+      const allSections = [...headerSections];
+      if (draft.unstagedPatch) {
+        allSections.push(`Unstaged changes\n\n${draft.unstagedPatch}`);
+      }
+      if (draft.stagedPatch) {
+        allSections.push(`Staged changes\n\n${draft.stagedPatch}`);
+      }
+      if (!draft.unstagedPatch && !draft.stagedPatch) {
+        allSections.push("No tracked patch is available for this file.\nThis is usually an untracked file.");
+      }
+
+      const hasUnstaged = Boolean(draft.unstagedPatch);
+      const hasStaged = Boolean(draft.stagedPatch);
+      const badgeText = hasUnstaged && hasStaged ? "US" : hasUnstaged ? "U" : hasStaged ? "S" : "?";
+
+      return {
+        badgeText,
+        hasStaged,
+        hasUnstaged,
+        key: draft.key,
+        kind: "file",
+        label: draft.label,
+        pagesByMode: {
+          all: this.paginateViewerSections(allSections, 3200),
+          staged: hasStaged
+            ? this.paginateViewerSections([...headerSections, `Staged changes\n\n${draft.stagedPatch}`], 3200)
+            : null,
+          unstaged: hasUnstaged
+            ? this.paginateViewerSections([...headerSections, `Unstaged changes\n\n${draft.unstagedPatch}`], 3200)
+            : null,
+        },
+      };
+    });
+  }
+
+  private splitDiffBlocks(patch: string): string[] {
+    const normalized = patch.trim();
+    if (!normalized) {
+      return [];
+    }
+
+    const blocks = normalized
+      .split(/\n(?=diff --git )/g)
+      .map((block) => block.trim())
+      .filter(Boolean);
+    if (blocks.length === 0) {
+      return [normalized];
+    }
+    return blocks;
+  }
+
+  private parseDiffStatusLine(statusLine: string): { key: string; label: string } | null {
+    const normalized = statusLine.trimEnd();
+    if (!normalized) {
+      return null;
+    }
+
+    const rawPath = normalized.length > 3 ? normalized.slice(3).trim() : normalized;
+    if (!rawPath) {
+      return null;
+    }
+
+    const currentPath = rawPath.includes(" -> ") ? (rawPath.split(" -> ").at(-1) ?? rawPath) : rawPath;
+    return {
+      key: currentPath,
+      label: rawPath,
+    };
+  }
+
+  private parseDiffBlockLabel(block: string): { key: string; label: string } {
+    const header = block.split("\n", 1)[0]?.trim() ?? "";
+    const match = header.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (!match) {
+      return { key: header || block.slice(0, 80), label: header || "Patch" };
+    }
+
+    const beforePath = match[1] ?? "";
+    const afterPath = match[2] ?? "";
+    if (afterPath === "/dev/null") {
+      return { key: beforePath, label: beforePath };
+    }
+    return { key: afterPath, label: beforePath === afterPath ? afterPath : `${beforePath} -> ${afterPath}` };
+  }
+
+  private currentDiffViewerEntry(viewer: DiffViewerState): DiffViewerEntry | null {
+    return viewer.entries[viewer.entryIndex] ?? null;
+  }
+
+  private defaultDiffViewerFileMode(entry: DiffViewerEntry | null): DiffViewerFileMode {
+    return this.normalizeDiffViewerFileMode(entry, "all");
+  }
+
+  private normalizeDiffViewerFileMode(entry: DiffViewerEntry | null, mode: DiffViewerFileMode): DiffViewerFileMode {
+    if (!entry || entry.kind !== "file") {
+      return "all";
+    }
+    if (mode === "staged" && entry.hasStaged) {
+      return "staged";
+    }
+    if (mode === "unstaged" && entry.hasUnstaged) {
+      return "unstaged";
+    }
+    return "all";
+  }
+
+  private currentDiffViewerPages(viewer: DiffViewerState): string[] {
+    const entry = this.currentDiffViewerEntry(viewer);
+    if (!entry) {
+      return ["Working tree is clean."];
+    }
+    if (entry.kind === "summary") {
+      return entry.pages;
+    }
+    const normalizedMode = this.normalizeDiffViewerFileMode(entry, viewer.fileMode);
+    if (normalizedMode === "staged") {
+      return entry.pagesByMode.staged ?? entry.pagesByMode.all;
+    }
+    if (normalizedMode === "unstaged") {
+      return entry.pagesByMode.unstaged ?? entry.pagesByMode.all;
+    }
+    return entry.pagesByMode.all;
+  }
+
+  private diffViewerFileEntries(viewer: DiffViewerState): DiffViewerFileEntry[] {
+    return viewer.entries.slice(1).filter((entry): entry is DiffViewerFileEntry => entry.kind === "file");
+  }
+
+  private diffViewerFileButtonPageCount(viewer: DiffViewerState): number {
+    return Math.max(1, Math.ceil(this.diffViewerFileEntries(viewer).length / DIFF_FILE_BUTTONS_PER_PAGE));
+  }
+
+  private diffViewerFileButtonPageIndexForEntry(entryIndex: number): number {
+    if (entryIndex <= 0) {
+      return 0;
+    }
+    return Math.floor((entryIndex - 1) / DIFF_FILE_BUTTONS_PER_PAGE);
+  }
+
+  private clampDiffViewerFileButtonPageIndex(viewer: DiffViewerState, pageIndex: number): number {
+    return Math.max(0, Math.min(pageIndex, this.diffViewerFileButtonPageCount(viewer) - 1));
+  }
+
+  private diffViewerFileButtonRows(viewer: DiffViewerState): TelegramInlineKeyboard {
+    const fileEntries = this.diffViewerFileEntries(viewer);
+    if (fileEntries.length === 0) {
+      return [];
+    }
+
+    const pageIndex = this.clampDiffViewerFileButtonPageIndex(viewer, viewer.fileButtonPageIndex);
+    const start = pageIndex * DIFF_FILE_BUTTONS_PER_PAGE;
+    const visible = fileEntries.slice(start, start + DIFF_FILE_BUTTONS_PER_PAGE);
+    const rows: TelegramInlineKeyboard = [];
+
+    for (let offset = 0; offset < visible.length; offset += DIFF_FILE_BUTTONS_PER_ROW) {
+      const slice = visible.slice(offset, offset + DIFF_FILE_BUTTONS_PER_ROW);
+      rows.push(
+        slice.map((entry, indexInSlice) => {
+          const absoluteIndex = start + offset + indexInSlice + 1;
+          return {
+            text: truncate(`${absoluteIndex}. [${entry.badgeText ?? "?"}] ${entry.label}`, 28),
+            callback_data: `diff:file-jump:${absoluteIndex}`,
+          };
+        }),
+      );
+    }
+
+    if (this.diffViewerFileButtonPageCount(viewer) > 1) {
+      const pagingRow = [];
+      if (pageIndex > 0) {
+        pagingRow.push({ text: "Prev Set", callback_data: "diff:file-buttons-prev" });
+      }
+      if (pageIndex < this.diffViewerFileButtonPageCount(viewer) - 1) {
+        pagingRow.push({ text: "Next Set", callback_data: "diff:file-buttons-next" });
+      }
+      if (pagingRow.length > 0) {
+        rows.push(pagingRow);
+      }
+    }
+
+    return rows;
+  }
+
+  private paginateViewerSections(sections: string[], maxLength = 3200): string[] {
+    const pages: string[] = [];
+    let current = "";
+
+    for (const rawSection of sections) {
+      const section = rawSection.trim();
+      if (!section) {
+        continue;
+      }
+
+      if (!current) {
+        if (section.length <= maxLength) {
+          current = section;
+          continue;
+        }
+        pages.push(...this.splitTextForTelegram(section, maxLength));
+        continue;
+      }
+
+      const candidate = `${current}\n\n${section}`;
+      if (candidate.length <= maxLength) {
+        current = candidate;
+        continue;
+      }
+
+      pages.push(current);
+      if (section.length <= maxLength) {
+        current = section;
+        continue;
+      }
+
+      pages.push(...this.splitTextForTelegram(section, maxLength));
+      current = "";
+    }
+
+    if (current) {
+      pages.push(current);
+    }
+
+    return pages.length > 0 ? pages : ["Working tree is clean."];
+  }
+
+  private async renderDiffViewer(viewer: DiffViewerState): Promise<void> {
+    const text = this.renderDiffViewerText(viewer);
+    const keyboard = this.diffViewerKeyboard(viewer);
+    const keyboardFingerprint = JSON.stringify(keyboard);
+
+    if (viewer.messageId && viewer.lastText === text && viewer.keyboardFingerprint === keyboardFingerprint) {
+      return;
+    }
+
+    if (viewer.messageId) {
+      try {
+        await this.telegram.editMessageText(viewer.location.chatId, viewer.messageId, text, keyboard);
+        viewer.lastText = text;
+        viewer.keyboardFingerprint = keyboardFingerprint;
+        return;
+      } catch (error) {
+        if (isTelegramMessageNotModifiedError(error)) {
+          viewer.lastText = text;
+          viewer.keyboardFingerprint = keyboardFingerprint;
+          return;
+        }
+        logger.warn("failed to edit diff viewer, sending new message", error);
+        viewer.messageId = null;
+      }
+    }
+
+    const messageId = await this.telegram.sendMessage(viewer.location.chatId, text, {
+      reply_markup: { inline_keyboard: keyboard },
+      ...(viewer.location.messageThreadId !== null ? { message_thread_id: viewer.location.messageThreadId } : {}),
+    });
+    viewer.messageId = messageId;
+    viewer.lastText = text;
+    viewer.keyboardFingerprint = keyboardFingerprint;
+  }
+
+  private renderDiffViewerText(viewer: DiffViewerState): string {
+    const entry = this.currentDiffViewerEntry(viewer);
+    const pages = this.currentDiffViewerPages(viewer);
+    const body = pages[viewer.pageIndex] ?? "Working tree is clean.";
+    const fileCount = Math.max(0, viewer.entries.length - 1);
+    const modeLine =
+      !entry || entry.kind === "summary"
+        ? "View: Summary"
+        : `File ${viewer.entryIndex}/${fileCount}: ${truncate(entry.label, 120)}`;
+    const patchModeLine =
+      entry?.kind === "file"
+        ? viewer.fileMode === "staged"
+          ? "Patch view: Staged only"
+          : viewer.fileMode === "unstaged"
+            ? "Patch view: Unstaged only"
+            : "Patch view: All changes"
+        : null;
+    return truncate(
+      [
+        `Diff: ${viewer.workspaceLabel}`,
+        `Changed files: ${viewer.changedFileCount}`,
+        modeLine,
+        patchModeLine,
+        entry?.kind === "summary" && fileCount > 0
+          ? `File buttons ${Math.min(
+              viewer.fileButtonPageIndex * DIFF_FILE_BUTTONS_PER_PAGE + 1,
+              fileCount,
+            )}-${Math.min((viewer.fileButtonPageIndex + 1) * DIFF_FILE_BUTTONS_PER_PAGE, fileCount)} of ${fileCount}`
+          : null,
+        `Page ${viewer.pageIndex + 1}/${pages.length}`,
+        "",
+        body,
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n"),
+      3800,
+    );
+  }
+
+  private diffViewerKeyboard(viewer: DiffViewerState): TelegramInlineKeyboard {
+    const entry = this.currentDiffViewerEntry(viewer);
+    if (entry?.kind === "summary") {
+      const keyboard = this.diffViewerFileButtonRows(viewer);
+      const pageRow = [];
+      if (viewer.pageIndex > 0) {
+        pageRow.push({ text: "Prev Page", callback_data: "diff:page-prev" });
+      }
+      if (entry.pages.length > 1 && viewer.pageIndex < entry.pages.length - 1) {
+        pageRow.push({ text: "Next Page", callback_data: "diff:page-next" });
+      }
+      if (pageRow.length > 0) {
+        keyboard.push(pageRow);
+      }
+      keyboard.push([
+        { text: "Refresh", callback_data: "diff:refresh" },
+        { text: "Close", callback_data: "diff:close" },
+      ]);
+      return keyboard;
+    }
+
+    if (!entry) {
+      return [
+        [
+          { text: "Refresh", callback_data: "diff:refresh" },
+          { text: "Close", callback_data: "diff:close" },
+        ],
+      ];
+    }
+
+    viewer.fileMode = this.normalizeDiffViewerFileMode(entry, viewer.fileMode);
+    const fileRow = [];
+    if (viewer.entryIndex > 0) {
+      fileRow.push({ text: "Prev File", callback_data: "diff:file-prev" });
+    }
+    if (viewer.entryIndex !== 0) {
+      fileRow.push({ text: "Summary", callback_data: "diff:summary" });
+    }
+    if (viewer.entryIndex < viewer.entries.length - 1) {
+      fileRow.push({ text: "Next File", callback_data: "diff:file-next" });
+    }
+
+    const modeRow = [];
+    if (entry.hasUnstaged && entry.hasStaged) {
+      modeRow.push({
+        text: viewer.fileMode === "all" ? "> All" : "All",
+        callback_data: "diff:mode:all",
+      });
+      modeRow.push({
+        text: viewer.fileMode === "unstaged" ? "> Unstaged" : "Unstaged",
+        callback_data: "diff:mode:unstaged",
+      });
+      modeRow.push({
+        text: viewer.fileMode === "staged" ? "> Staged" : "Staged",
+        callback_data: "diff:mode:staged",
+      });
+    }
+
+    const pageRow = [];
+    if (viewer.pageIndex > 0) {
+      pageRow.push({ text: "Prev Page", callback_data: "diff:page-prev" });
+    }
+    if (viewer.pageIndex < this.currentDiffViewerPages(viewer).length - 1) {
+      pageRow.push({ text: "Next Page", callback_data: "diff:page-next" });
+    }
+
+    const keyboard: TelegramInlineKeyboard = [];
+    if (fileRow.length > 0) {
+      keyboard.push(fileRow);
+    }
+    if (modeRow.length > 0) {
+      keyboard.push(modeRow);
+    }
+    if (pageRow.length > 0) {
+      keyboard.push(pageRow);
+    }
+    keyboard.push([
+      { text: "Refresh", callback_data: "diff:refresh" },
+      { text: "Close", callback_data: "diff:close" },
+    ]);
+    return keyboard;
+  }
+
+  private async closeDiffViewer(viewer: DiffViewerState): Promise<void> {
+    this.diffViewers.delete(conversationKey(viewer.location));
+    if (!viewer.messageId) {
+      return;
+    }
+
+    try {
+      await this.telegram.deleteMessage(viewer.location.chatId, viewer.messageId);
+    } catch (error) {
+      logger.warn("failed to delete diff viewer", error);
+      try {
+        await this.telegram.editMessageText(viewer.location.chatId, viewer.messageId, "Diff viewer closed.");
+      } catch (editError) {
+        logger.warn("failed to mark diff viewer as closed", editError);
+      }
     }
   }
 
