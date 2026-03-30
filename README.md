@@ -4,6 +4,40 @@ Control the local Conductor instance from Telegram.
 
 This bridge must run on the same Mac that already has Conductor installed and initialized. It reads the local Conductor database and launches the local Codex binary from that machine; it is not a remote bridge for controlling another computer's Conductor instance.
 
+## Conductor <-> Telegram Mapping
+
+```mermaid
+flowchart LR
+  subgraph C["Conductor on the same Mac"]
+    direction TB
+    repo["Repository"]
+    workspace["Workspace<br/>(branch)"]
+    session["Chat / session"]
+    turns["Codex thread<br/>and turns"]
+    repo --> workspace --> session --> turns
+  end
+
+  subgraph T["Telegram"]
+    direction TB
+    repoPicker["Repo picker"]
+    branchPicker["Branch picker"]
+    chatTarget["Current chat target<br/>(chat or topic)"]
+    messages["Plain-text messages<br/>and streamed updates"]
+    repoPicker --> branchPicker --> chatTarget --> messages
+  end
+
+  repo -. choose repo .-> repoPicker
+  workspace -. choose branch .-> branchPicker
+  session -. continue current chat .-> chatTarget
+  turns -. prompt and output .-> messages
+```
+
+- A Conductor repository is the repo you pick in Telegram.
+- A Conductor workspace is the branch context you pick in Telegram.
+- A Conductor session is the current chat you continue from Telegram.
+- In forum-enabled supergroups, one Conductor chat is bound to one dedicated Telegram topic.
+- In private chats, or in chats without topics, the conversation stays in the current Telegram chat instead.
+
 The current version supports:
 
 - Browsing repos
