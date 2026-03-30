@@ -6,21 +6,7 @@ This bridge must run on the same Mac that already has Conductor installed and in
 
 ## Conductor <-> Telegram Mapping
 
-```text
-Conductor on the same Mac                  Telegram
--------------------------                  ---------------------------------
-Repository                  <----------->  Repo picker
-    |                                          |
-    v                                          v
-Workspace (branch)          <----------->  Branch picker
-    |                                          |
-    v                                          v
-Chat / session              <----------->  Current chat target
-    |                                          | (private chat or topic)
-    v                                          v
-Codex thread and turns      <----------->  Plain-text messages
-                                            and streamed updates
-```
+![Conductor to Telegram mapping](./docs/conductor-telegram-mapping.svg)
 
 - A Conductor repository is the repo you pick in Telegram.
 - A Conductor workspace is the branch context you pick in Telegram.
