@@ -34,6 +34,7 @@ import {
 } from "../utils/text.js";
 import { isStatusProbeText } from "../utils/intent.js";
 import { logger } from "../utils/logger.js";
+import { normalizeTelegramCommand } from "../utils/telegram-command.js";
 
 interface BridgeConfig {
   pollTimeoutSeconds: number;
@@ -231,7 +232,7 @@ export class TelegramBridgeService {
   }
 
   private async handleCommand(chatId: number, commandText: string): Promise<void> {
-    const command = commandText.split(/\s+/, 1)[0] ?? "";
+    const command = normalizeTelegramCommand(commandText);
     switch (command) {
       case "/start":
       case "/home":

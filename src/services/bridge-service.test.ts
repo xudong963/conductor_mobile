@@ -666,6 +666,29 @@ describe("TelegramBridgeService user flows", () => {
     expect(fixture.registry.getSessionById("session-1")?.status).toBe("cancelling");
   });
 
+  it("interrupts the active turn with /stop@botname", async () => {
+    const workspace = createWorkspace({
+      activeSessionId: "session-1",
+    });
+    const session = createSession();
+    const fixture = createFixture({
+      workspaces: [workspace],
+      sessions: [session],
+    });
+    fixture.stateStore.updateChatContext(chatId, {
+      activeWorkspaceId: "workspace-1",
+      activeSessionId: "session-1",
+      followSessionId: "session-1",
+    });
+
+    await handleUpdate(fixture, messageUpdate("First prompt"));
+    await handleUpdate(fixture, messageUpdate("/stop@conductor_coding_bot"));
+
+    expect(fixture.codex.interruptedTurns).toEqual([{ threadId: "thread-existing", turnId: "turn-1" }]);
+    expect(fixture.telegram.sentMessages.at(-1)?.text).toBe("Interrupt requested.");
+    expect(fixture.registry.getSessionById("session-1")?.status).toBe("cancelling");
+  });
+
   it("treats interrupted turns as idle instead of errors", async () => {
     const workspace = createWorkspace({
       activeSessionId: "session-1",

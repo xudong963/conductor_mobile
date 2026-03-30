@@ -35,6 +35,7 @@ import type {
 import { logger } from "./utils/logger.js";
 import { KeyedSerialTaskQueue } from "./utils/keyed-serial-task-queue.js";
 import { isStatusProbeText } from "./utils/intent.js";
+import { normalizeTelegramCommand } from "./utils/telegram-command.js";
 import {
   extractHumanText,
   formatBranchName,
@@ -202,11 +203,6 @@ function extractErrorMessage(error: unknown): string {
   } catch {
     return String(error);
   }
-}
-
-function normalizeCommand(input: string): string {
-  const command = input.trim().split(/\s+/, 1)[0] ?? input.trim();
-  return command.split("@", 1)[0] ?? command;
 }
 
 function toConversationTarget(
@@ -633,7 +629,7 @@ export class TelegramConductorBridge {
   }
 
   private async handleCommand(location: TelegramConversationTarget, rawCommand: string): Promise<void> {
-    const command = normalizeCommand(rawCommand);
+    const command = normalizeTelegramCommand(rawCommand);
     switch (command) {
       case "/start":
       case "/home":
