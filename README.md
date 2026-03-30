@@ -67,6 +67,13 @@ Development mode:
 npm run dev
 ```
 
+## Keep It Running on macOS
+
+If you want the bridge to stay available after login, use a user `LaunchAgent` via `launchd`.
+`Launchpad` is only an app launcher; it does not keep a CLI process alive.
+If you set this up, make sure the process starts from the repo root so it can find `.env` and `.context/`.
+If your Node.js installation only exists in an interactive shell setup such as `nvm`, `launchd` may not see it.
+
 ## Telegram Commands
 
 - `/start` or `/home`: return to the home screen
