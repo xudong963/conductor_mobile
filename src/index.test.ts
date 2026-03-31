@@ -101,6 +101,49 @@ describe("TelegramConductorBridge", () => {
     expect(telegram.sendMessage).toHaveBeenCalledWith(99, "Failed to process that message. Please try again.", {});
   });
 
+  it("replies to the General forum topic without echoing its message_thread_id", async () => {
+    const { bridge, stateStore, telegram } = createBridge();
+
+    stateStore.getConversationContext.mockReturnValue({
+      activeSessionId: null,
+      activeWorkspaceId: null,
+      chatId: -100123,
+      composeMode: "none",
+      composeTargetSessionId: null,
+      composeTargetThreadId: null,
+      composeTargetTurnId: null,
+      composeWorkspaceId: null,
+      followSessionId: null,
+      messageThreadId: null,
+      updatedAt: "2026-03-31T00:00:00.000Z",
+    });
+
+    await (
+      bridge as unknown as {
+        handleMessage: (message: {
+          chat: { id: number; type: string };
+          date: number;
+          is_topic_message?: boolean;
+          message_id: number;
+          message_thread_id?: number;
+          text?: string;
+        }) => Promise<void>;
+      }
+    ).handleMessage({
+      chat: { id: -100123, type: "supergroup" },
+      date: 0,
+      is_topic_message: false,
+      message_id: 7,
+      message_thread_id: 321,
+      text: "/start@conductor_coding_bot",
+    });
+
+    expect(telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(telegram.sendMessage.mock.calls[0]?.[0]).toBe(-100123);
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Conductor Telegram Bridge");
+    expect(telegram.sendMessage.mock.calls[0]?.[2]).not.toHaveProperty("message_thread_id");
+  });
+
   it("responds with an error for unsupported codex server requests", async () => {
     const { bridge, codex } = createBridge();
 

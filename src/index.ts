@@ -206,11 +206,12 @@ function extractErrorMessage(error: unknown): string {
 }
 
 function toConversationTarget(
-  message: Pick<TelegramMessage, "chat" | "message_thread_id">,
+  message: Pick<TelegramMessage, "chat" | "is_topic_message" | "message_thread_id">,
 ): TelegramConversationTarget {
   return {
     chatId: message.chat.id,
-    messageThreadId: message.message_thread_id ?? null,
+    // Telegram's built-in General forum topic must be addressed like the parent supergroup.
+    messageThreadId: message.is_topic_message ? (message.message_thread_id ?? null) : null,
   };
 }
 
