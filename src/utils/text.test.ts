@@ -51,6 +51,10 @@ describe("formatBranchName", () => {
     expect(formatBranchName({ branch: " feature/demo ", directoryName: "moscow" })).toBe("feature/demo");
   });
 
+  it("omits the xudong963 prefix from branch labels", () => {
+    expect(formatBranchName({ branch: " xudong963/berlin ", directoryName: "moscow" })).toBe("berlin");
+  });
+
   it("falls back to directory names", () => {
     expect(formatBranchName({ branch: null, directoryName: "spokane" })).toBe("spokane");
   });
@@ -159,7 +163,7 @@ describe("formatBranchPickerText", () => {
     expect(result).toContain("Build login flow");
     expect(result).toContain("Current");
     expect(result).toContain("Directory: moscow");
-    expect(result).toContain("2. xudong963/bangalore");
+    expect(result).toContain("2. bangalore");
     expect(result).toContain("Explain Project");
     expect(result).toContain("Tap a button below to choose.");
   });

@@ -125,7 +125,7 @@ Create a new workspace:
 
 1. Select a repo and branch first, or open a repo's branch list
 2. Tap `New Workspace` or `New Workspace Here`, or send `/new_workspace`
-3. Send the full branch name as your next message
+3. Send the branch name as your next message, for example `berlin` or `feature/demo`
 4. The bridge creates a git worktree, writes the Conductor workspace row, and switches you to the new branch
 
 ## Output Model

@@ -13,6 +13,7 @@ import type {
   SessionStatus,
   WorkspaceRef,
 } from "../types.js";
+import { branchLookupCandidates, matchesRemoteBranchName } from "../utils/branch-name.js";
 import { sortRepositoryWorkspaces, type RepositoryWorkspacePriorityRef } from "../utils/workspace-priority.js";
 
 interface DbSessionRow {
@@ -159,30 +160,41 @@ export class ConductorRegistryAdapter {
   }
 
   findWorkspaceByBranch(repositoryId: string, branchName: string): WorkspaceRef | null {
-    const row = this.db
-      .prepare(
-        `
-          SELECT
-            w.id,
-            w.directory_name as directoryName,
-            w.branch as branch,
-            w.pr_title as prTitle,
-            s.title as activeSessionTitle,
-            w.repository_id as repositoryId,
-            w.active_session_id as activeSessionId,
-            w.updated_at as updatedAt,
-            r.root_path as rootPath,
-            r.name as repositoryName
-          FROM workspaces w
-          JOIN repos r ON r.id = w.repository_id
-          LEFT JOIN sessions s ON s.id = w.active_session_id
-          WHERE w.repository_id = ?
-            AND w.branch = ?
-          LIMIT 1
-        `,
-      )
-      .get(repositoryId, branchName.trim()) as WorkspaceRef | undefined;
-    return row ?? null;
+    const candidates = branchLookupCandidates(branchName);
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    const query = this.db.prepare(
+      `
+        SELECT
+          w.id,
+          w.directory_name as directoryName,
+          w.branch as branch,
+          w.pr_title as prTitle,
+          s.title as activeSessionTitle,
+          w.repository_id as repositoryId,
+          w.active_session_id as activeSessionId,
+          w.updated_at as updatedAt,
+          r.root_path as rootPath,
+          r.name as repositoryName
+        FROM workspaces w
+        JOIN repos r ON r.id = w.repository_id
+        LEFT JOIN sessions s ON s.id = w.active_session_id
+        WHERE w.repository_id = ?
+          AND w.branch = ?
+        LIMIT 1
+      `,
+    );
+
+    for (const candidate of candidates) {
+      const row = query.get(repositoryId, candidate) as WorkspaceRef | undefined;
+      if (row) {
+        return row;
+      }
+    }
+
+    return null;
   }
 
   listWorkspacesForRepository(repositoryId: string, limit: number): WorkspaceRef[] {
@@ -660,12 +672,11 @@ export class ConductorRegistryAdapter {
       return null;
     }
 
-    const suffix = `/${branchName}`;
     const refs = output
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line && line !== "origin/HEAD")
-      .filter((line) => line.endsWith(suffix))
+      .filter((line) => matchesRemoteBranchName(line, branchName))
       .sort((left, right) => {
         const preferred = preferredRemote?.trim();
         const preferredRef = preferred ? `${preferred}/${branchName}` : null;

@@ -1419,7 +1419,7 @@ export class TelegramConductorBridge {
 
     await this.safeSendMessage(
       location,
-      `Send the full branch name for the new workspace in ${formatRepositoryLabel(repository)}. It will be created from ${
+      `Send the branch name for the new workspace in ${formatRepositoryLabel(repository)}. It will be created from ${
         repository.defaultBranch?.trim() || "master"
       }.`,
     );
@@ -1453,7 +1453,7 @@ export class TelegramConductorBridge {
       .find(Boolean);
 
     if (!requestedBranch) {
-      await this.safeSendMessage(location, "Send a branch name like feature/demo or xudong963/demo.");
+      await this.safeSendMessage(location, "Send a branch name like berlin or feature/demo.");
       return;
     }
 
