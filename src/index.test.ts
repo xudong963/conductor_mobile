@@ -630,7 +630,7 @@ describe("TelegramConductorBridge", () => {
     );
     expect(telegram.sendMessage).toHaveBeenCalledWith(
       99,
-      "Send the full branch name for the new workspace in conductor_mobile. It will be created from master.",
+      "Send the branch name for the new workspace in conductor_mobile. It will be created from master.",
       {},
     );
   });
@@ -655,7 +655,7 @@ describe("TelegramConductorBridge", () => {
       id: "workspace-2",
       repositoryId: "repo-1",
       directoryName: "berlin",
-      branch: "xudong963/berlin",
+      branch: "berlin",
     });
 
     (bridge as unknown as { selectBranch: typeof selectBranch }).selectBranch = selectBranch;
@@ -664,12 +664,12 @@ describe("TelegramConductorBridge", () => {
       bridge as unknown as {
         handlePlainText: (location: { chatId: number; messageThreadId: number | null }, text: string) => Promise<void>;
       }
-    ).handlePlainText({ chatId: 99, messageThreadId: null }, "xudong963/berlin");
+    ).handlePlainText({ chatId: 99, messageThreadId: null }, "berlin");
 
-    expect(registry.createWorkspace).toHaveBeenCalledWith("repo-1", "xudong963/berlin");
+    expect(registry.createWorkspace).toHaveBeenCalledWith("repo-1", "berlin");
     expect(stateStore.clearConversationComposeMode).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
     expect(selectBranch).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null }, "workspace-2", {
-      prefix: "Created workspace: xudong963/berlin\nDirectory: berlin",
+      prefix: "Created workspace: berlin",
     });
   });
 
@@ -701,12 +701,12 @@ describe("TelegramConductorBridge", () => {
       bridge as unknown as {
         handlePlainText: (location: { chatId: number; messageThreadId: number | null }, text: string) => Promise<void>;
       }
-    ).handlePlainText({ chatId: 99, messageThreadId: null }, "xudong963/berlin");
+    ).handlePlainText({ chatId: 99, messageThreadId: null }, "berlin");
 
     expect(registry.createWorkspace).not.toHaveBeenCalled();
     expect(stateStore.clearConversationComposeMode).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
     expect(selectBranch).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null }, "workspace-3", {
-      prefix: "Workspace already exists: xudong963/berlin",
+      prefix: "Workspace already exists: berlin",
     });
   });
 
