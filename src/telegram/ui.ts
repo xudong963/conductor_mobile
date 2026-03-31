@@ -6,7 +6,18 @@ import {
   formatWorkspaceLabel,
 } from "../utils/text.js";
 
-export function homeKeyboard(options?: { showStop?: boolean }): TelegramInlineKeyboard {
+export function homeKeyboard(options?: { showStop?: boolean; topicLocked?: boolean }): TelegramInlineKeyboard {
+  if (options?.topicLocked) {
+    const rows: TelegramInlineKeyboard = [
+      [{ text: "Continue Here", callback_data: "home:continue" }],
+      [{ text: "Help", callback_data: "home:help" }],
+    ];
+    if (options.showStop) {
+      rows.splice(1, 0, [{ text: "Stop Current Turn", callback_data: "home:stop" }]);
+    }
+    return rows;
+  }
+
   const rows: TelegramInlineKeyboard = [
     [
       { text: "Continue Here", callback_data: "home:continue" },

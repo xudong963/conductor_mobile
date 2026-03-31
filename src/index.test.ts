@@ -18,6 +18,7 @@ vi.mock("./config.js", () => ({
 
 import { TelegramConductorBridge } from "./index.js";
 import { TelegramApiError } from "./telegram/client.js";
+import { homeKeyboard } from "./telegram/ui.js";
 
 function createBridge() {
   const codex = {
@@ -391,6 +392,111 @@ describe("TelegramConductorBridge", () => {
 
     expect(showStatus).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null });
     expect(submitPrompt).not.toHaveBeenCalled();
+  });
+
+  it("rejects branch switching commands inside dedicated topics", async () => {
+    const { bridge, telegram } = createBridge();
+    const showBranches = vi.fn();
+
+    (bridge as unknown as { showBranches: typeof showBranches }).showBranches = showBranches;
+
+    await (
+      bridge as unknown as {
+        handleCommand: (location: { chatId: number; messageThreadId: number | null }, command: string) => Promise<void>;
+      }
+    ).handleCommand({ chatId: 99, messageThreadId: 77 }, "/branches");
+
+    expect(showBranches).not.toHaveBeenCalled();
+    expect(telegram.sendMessage).toHaveBeenCalledWith(
+      99,
+      "This topic is locked to its current chat. Use the main chat to switch repos, branches, open inbox, or select or create another chat.",
+      { message_thread_id: 77 },
+    );
+  });
+
+  it("rejects chat switching callbacks inside dedicated topics", async () => {
+    const { bridge, telegram } = createBridge();
+    const selectChat = vi.fn();
+
+    (bridge as unknown as { selectChat: typeof selectChat }).selectChat = selectChat;
+
+    await (
+      bridge as unknown as {
+        handleCallback: (callback: {
+          id: string;
+          data: string;
+          from: { first_name: string; id: number; is_bot: boolean };
+          message: {
+            chat: { id: number; type: string };
+            date: number;
+            is_topic_message?: boolean;
+            message_id: number;
+            message_thread_id?: number;
+            text?: string;
+          };
+        }) => Promise<void>;
+      }
+    ).handleCallback({
+      id: "callback-1",
+      data: "session:session-2",
+      from: { first_name: "Tester", id: 99, is_bot: false },
+      message: {
+        chat: { id: 99, type: "supergroup" },
+        date: 0,
+        is_topic_message: true,
+        message_id: 1,
+        message_thread_id: 77,
+        text: "button",
+      },
+    });
+
+    expect(selectChat).not.toHaveBeenCalled();
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith(
+      "callback-1",
+      "This topic is locked to its current chat. Use the main chat.",
+    );
+  });
+
+  it("clears stale new-chat compose mode inside dedicated topics", async () => {
+    const { bridge, stateStore, telegram } = createBridge();
+    const createNewSession = vi.fn();
+
+    stateStore.getConversationContext.mockReturnValue({
+      activeSessionId: "session-1",
+      activeWorkspaceId: "workspace-1",
+      chatId: 99,
+      composeMode: "new_session",
+      composeTargetSessionId: null,
+      composeTargetThreadId: null,
+      composeTargetTurnId: null,
+      composeWorkspaceId: "workspace-1",
+      followSessionId: "session-1",
+      messageThreadId: 77,
+      updatedAt: "2026-03-31T00:00:00.000Z",
+    });
+    (bridge as unknown as { createNewSession: typeof createNewSession }).createNewSession = createNewSession;
+
+    await (
+      bridge as unknown as {
+        handlePlainText: (location: { chatId: number; messageThreadId: number | null }, text: string) => Promise<void>;
+      }
+    ).handlePlainText({ chatId: 99, messageThreadId: 77 }, "create another chat");
+
+    expect(stateStore.clearConversationComposeMode).toHaveBeenCalledWith({ chatId: 99, messageThreadId: 77 });
+    expect(createNewSession).not.toHaveBeenCalled();
+    expect(telegram.sendMessage).toHaveBeenCalledWith(
+      99,
+      "This topic is locked to its current chat. Use the main chat to switch repos, branches, open inbox, or select or create another chat.",
+      { message_thread_id: 77 },
+    );
+  });
+
+  it("removes switching controls from the locked topic home keyboard", () => {
+    const callbacks = homeKeyboard({ showStop: true, topicLocked: true })
+      .flat()
+      .map((button) => button.callback_data);
+
+    expect(callbacks).toEqual(["home:continue", "home:stop", "home:help"]);
   });
 
   it("falls back to a legacy following topic when bootstrapping the binding fails", () => {

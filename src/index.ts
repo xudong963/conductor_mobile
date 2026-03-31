@@ -262,6 +262,9 @@ const BOT_COMMANDS: TelegramBotCommand[] = [
 
 const STREAM_EDIT_INTERVAL_MS = 400;
 const STREAM_EAGER_EDIT_CHARS = 120;
+const TOPIC_LOCKED_CALLBACK_TEXT = "This topic is locked to its current chat. Use the main chat.";
+const TOPIC_LOCKED_MESSAGE =
+  "This topic is locked to its current chat. Use the main chat to switch repos, branches, open inbox, or select or create another chat.";
 
 function buildHelpText(): string {
   return [
@@ -482,6 +485,11 @@ export class TelegramConductorBridge {
       return;
     }
 
+    if (this.isDedicatedTopicLocation(location) && this.isTopicLockedCallback(data)) {
+      await this.rejectTopicLockedAction(location, callback.id);
+      return;
+    }
+
     if (data === "home:workspaces" || data === "home:repos") {
       await this.telegram.answerCallbackQuery(callback.id);
       await this.showRepositories(location);
@@ -510,6 +518,10 @@ export class TelegramConductorBridge {
       await this.telegram.answerCallbackQuery(callback.id);
       const session = this.resolveSelectedSession(location);
       if (!session) {
+        if (this.isDedicatedTopicLocation(location)) {
+          await this.safeSendMessage(location, TOPIC_LOCKED_MESSAGE);
+          return;
+        }
         const context = this.stateStore.getConversationContext(location);
         if (context.activeWorkspaceId) {
           await this.showChats(location, "Select a chat first.");
@@ -631,6 +643,11 @@ export class TelegramConductorBridge {
 
   private async handleCommand(location: TelegramConversationTarget, rawCommand: string): Promise<void> {
     const command = normalizeTelegramCommand(rawCommand);
+    if (this.isDedicatedTopicLocation(location) && this.isTopicLockedCommand(command)) {
+      await this.rejectTopicLockedAction(location);
+      return;
+    }
+
     switch (command) {
       case "/start":
       case "/home":
@@ -689,6 +706,15 @@ export class TelegramConductorBridge {
     }
 
     const context = this.stateStore.getConversationContext(location);
+    if (
+      this.isDedicatedTopicLocation(location) &&
+      (context.composeMode === "new_session" || context.composeMode === "new_workspace")
+    ) {
+      this.stateStore.clearConversationComposeMode(location);
+      await this.rejectTopicLockedAction(location);
+      return;
+    }
+
     const session = this.resolveSelectedSession(location);
 
     if (session) {
@@ -728,6 +754,10 @@ export class TelegramConductorBridge {
     }
 
     if (!session) {
+      if (this.isDedicatedTopicLocation(location)) {
+        await this.rejectTopicLockedAction(location);
+        return;
+      }
       if (context.activeWorkspaceId) {
         await this.showHome(
           location,
@@ -967,13 +997,23 @@ export class TelegramConductorBridge {
     lines.push(`Current Chat: ${selectedChatLabel(session)}`);
     lines.push(`Status: ${this.sessionStatusLabel(session, runtime)}`);
     lines.push(`Mode: ${context.composeMode}`);
+    if (this.isDedicatedTopicLocation(location)) {
+      lines.push("Topic Lock: This topic can only continue its current chat.");
+    }
     if (dedicatedTopic && conversationKey(dedicatedTopic) !== conversationKey(location)) {
       lines.push(`Dedicated Topic: ${dedicatedTopic.messageThreadId}`);
     }
     if (location.messageThreadId !== null) {
       lines.push(`Topic: ${location.messageThreadId}`);
     }
-    await this.safeSendMessage(location, lines.join("\n"), homeKeyboard({ showStop: this.canInterruptTurn(runtime) }));
+    await this.safeSendMessage(
+      location,
+      lines.join("\n"),
+      homeKeyboard({
+        showStop: this.canInterruptTurn(runtime),
+        topicLocked: this.isDedicatedTopicLocation(location),
+      }),
+    );
   }
 
   private async showRepositories(location: TelegramConversationTarget, prefix?: string): Promise<void> {
@@ -1042,8 +1082,10 @@ export class TelegramConductorBridge {
     if (sessions.length === 0) {
       await this.safeSendMessage(
         location,
-        `${prefix ? `${prefix}\n\n` : ""}There are no chats on the current branch. Tap New Chat Here to create a new Conductor chat.`,
-        homeKeyboard(),
+        this.isDedicatedTopicLocation(location)
+          ? `${prefix ? `${prefix}\n\n` : ""}This topic is locked to its current chat. Use the main chat to create or select another chat.`
+          : `${prefix ? `${prefix}\n\n` : ""}There are no chats on the current branch. Tap New Chat Here to create a new Conductor chat.`,
+        homeKeyboard({ topicLocked: this.isDedicatedTopicLocation(location) }),
       );
       return;
     }
@@ -1233,6 +1275,13 @@ export class TelegramConductorBridge {
         const context = this.stateStore.getConversationContext(location);
         if (context.activeSessionId === session.id) {
           this.stateStore.setConversationActiveSession(location, null);
+        }
+        if (this.isDedicatedTopicLocation(location)) {
+          await this.safeSendMessage(
+            location,
+            "This topic is locked to its current chat, but that chat's underlying thread is no longer valid. Use the main chat to select or create another chat.",
+          );
+          return "permanent_failure";
         }
         await this.showChats(
           location,
@@ -1588,6 +1637,40 @@ export class TelegramConductorBridge {
       await this.safeSendMessage(location, text);
     }
     return text;
+  }
+
+  private isDedicatedTopicLocation(location: TelegramConversationTarget): boolean {
+    return location.messageThreadId !== null;
+  }
+
+  private isTopicLockedCommand(command: string): boolean {
+    return ["/repos", "/workspaces", "/branches", "/chats", "/sessions", "/new", "/new_workspace"].includes(command);
+  }
+
+  private isTopicLockedCallback(data: string): boolean {
+    return (
+      data === "home:workspaces" ||
+      data === "home:repos" ||
+      data === "home:branches" ||
+      data === "home:sessions" ||
+      data === "home:chats" ||
+      data === "home:new" ||
+      data === "home:new-workspace" ||
+      data === "home:inbox" ||
+      data.startsWith("repo:") ||
+      data.startsWith("repo-new:") ||
+      data.startsWith("branch:") ||
+      data.startsWith("workspace:") ||
+      data.startsWith("session:")
+    );
+  }
+
+  private async rejectTopicLockedAction(location: TelegramConversationTarget, callbackId?: string): Promise<void> {
+    if (callbackId) {
+      await this.telegram.answerCallbackQuery(callbackId, TOPIC_LOCKED_CALLBACK_TEXT);
+      return;
+    }
+    await this.safeSendMessage(location, TOPIC_LOCKED_MESSAGE);
   }
 
   private buildInputAnswers(questions: PendingInputQuestion[], text: string): Record<string, { answers: string[] }> {
