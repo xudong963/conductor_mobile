@@ -42,12 +42,15 @@ interface DbRepositoryRow extends RepositoryRef {
   remote: string | null;
 }
 
+const MERGED_BRANCH_CACHE_TTL_MS = 3_000;
+
 export class ConductorRegistryAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
   private readonly workspacesRoot: string;
   private readonly defaultFallbackModel: string;
   private readonly defaultPermissionMode: string;
+  private readonly mergedBranchNamesCache = new Map<string, { expiresAt: number; names: Set<string> }>();
 
   constructor(
     conductorDbPath: string,
@@ -267,6 +270,11 @@ export class ConductorRegistryAdapter {
 
   private getMergedBranchNames(rootPath: string, defaultBranch: string | null | undefined): Set<string> {
     const normalizedDefaultBranch = defaultBranch?.trim() || "master";
+    const cacheKey = `${rootPath}\u0000${normalizedDefaultBranch}`;
+    const cached = this.mergedBranchNamesCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.names;
+    }
 
     for (const targetRef of [normalizedDefaultBranch, `origin/${normalizedDefaultBranch}`]) {
       try {
@@ -284,7 +292,7 @@ export class ConductorRegistryAdapter {
           { encoding: "utf8" },
         );
 
-        return new Set(
+        const names = new Set(
           output
             .split("\n")
             .map((line) => line.trim())
@@ -301,12 +309,31 @@ export class ConductorRegistryAdapter {
               return [];
             }),
         );
+        this.mergedBranchNamesCache.set(cacheKey, {
+          expiresAt: Date.now() + MERGED_BRANCH_CACHE_TTL_MS,
+          names,
+        });
+        return names;
       } catch {
         continue;
       }
     }
 
-    return new Set<string>();
+    const empty = new Set<string>();
+    this.mergedBranchNamesCache.set(cacheKey, {
+      expiresAt: Date.now() + MERGED_BRANCH_CACHE_TTL_MS,
+      names: empty,
+    });
+    return empty;
+  }
+
+  private invalidateMergedBranchNamesCache(rootPath: string): void {
+    const prefix = `${rootPath}\u0000`;
+    for (const key of this.mergedBranchNamesCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.mergedBranchNamesCache.delete(key);
+      }
+    }
   }
 
   listSessions(workspaceId: string, limit: number): ConductorSessionRef[] {
@@ -630,6 +657,7 @@ export class ConductorRegistryAdapter {
       if (!created) {
         throw new Error(`Failed to read back created workspace ${workspaceId}.`);
       }
+      this.invalidateMergedBranchNamesCache(repository.rootPath);
       return created;
     } catch (error) {
       if (worktreeCreated) {

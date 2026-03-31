@@ -126,4 +126,14 @@ describe("BridgeStateStore conversation contexts", () => {
       finishedAt: null,
     });
   });
+
+  it("counts queued prompts without loading the full queue", () => {
+    const { store } = createStore();
+
+    store.enqueuePrompt("session-1", "thread-1", "normal", "First");
+    const secondId = store.enqueuePrompt("session-1", "thread-1", "normal", "Second");
+    store.markPromptStarted(secondId);
+
+    expect(store.countQueuedPrompts("session-1")).toBe(1);
+  });
 });

@@ -17,7 +17,7 @@ function telegramErrorResponse(status: number, body: Record<string, unknown>): R
   });
 }
 
-function telegramSuccessResponse(result: Record<string, unknown>): Response {
+function telegramSuccessResponse(result: unknown): Response {
   return telegramErrorResponse(200, { ok: true, result });
 }
 
@@ -106,7 +106,7 @@ describe("TelegramClient", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("shares the Telegram retry window across outbound requests", async () => {
+  it("shares the Telegram retry window across write requests", async () => {
     vi.useFakeTimers();
     const fetch = vi
       .fn()
@@ -146,14 +146,14 @@ describe("TelegramClient", () => {
     vi.stubGlobal("fetch", fetch);
 
     const client = new TelegramClient("token");
-    client["retryAfterDeadlineMs"] = Date.now() + 2_000;
+    client["retryAfterDeadlineMsByLane"].set("write", Date.now() + 2_000);
 
     const messagePromise = client.sendMessage(7, "first");
 
     await vi.advanceTimersByTimeAsync(1_000);
     expect(fetch).not.toHaveBeenCalled();
 
-    client["retryAfterDeadlineMs"] = Date.now() + 2_000;
+    client["retryAfterDeadlineMsByLane"].set("write", Date.now() + 2_000);
 
     await vi.advanceTimersByTimeAsync(999);
     expect(fetch).not.toHaveBeenCalled();
@@ -161,6 +161,68 @@ describe("TelegramClient", () => {
     await vi.advanceTimersByTimeAsync(1_001);
     await expect(messagePromise).resolves.toBe(100);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not block callback acknowledgements on the write retry window", async () => {
+    vi.useFakeTimers();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        telegramErrorResponse(429, {
+          ok: false,
+          error_code: 429,
+          description: "Too Many Requests: retry after 3",
+        }),
+      )
+      .mockResolvedValueOnce(telegramSuccessResponse(true))
+      .mockResolvedValueOnce(telegramSuccessResponse({ message_id: 99 }));
+    vi.stubGlobal("fetch", fetch);
+
+    const client = new TelegramClient("token");
+    const sendPromise = client.sendMessage(7, "first");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    const callbackPromise = client.answerCallbackQuery("callback-1");
+
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(callbackPromise).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    await expect(sendPromise).resolves.toBe(99);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not block polling on the write retry window", async () => {
+    vi.useFakeTimers();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        telegramErrorResponse(429, {
+          ok: false,
+          error_code: 429,
+          description: "Too Many Requests: retry after 3",
+        }),
+      )
+      .mockResolvedValueOnce(telegramSuccessResponse([]))
+      .mockResolvedValueOnce(telegramSuccessResponse({ message_id: 99 }));
+    vi.stubGlobal("fetch", fetch);
+
+    const client = new TelegramClient("token");
+    const sendPromise = client.sendMessage(7, "first");
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    const updatesPromise = client.getUpdates(101, 30);
+
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(updatesPromise).resolves.toEqual([]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    await expect(sendPromise).resolves.toBe(99);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 
   it("ignores expired callback query errors", async () => {

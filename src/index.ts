@@ -82,6 +82,7 @@ interface ContextViewerState {
 interface SessionPanelState {
   keyboardFingerprint: string;
   lastText: string;
+  lastSentAt: number;
   messageId: number | null;
   sessionId: string | null;
 }
@@ -262,6 +263,8 @@ const BOT_COMMANDS: TelegramBotCommand[] = [
 
 const STREAM_EDIT_INTERVAL_MS = 400;
 const STREAM_EAGER_EDIT_CHARS = 120;
+const PANEL_EDIT_INTERVAL_MS = 350;
+const PANEL_EAGER_EDIT_CHARS = 140;
 const TOPIC_LOCKED_CALLBACK_TEXT = "This topic is locked to its current chat. Use the main chat.";
 const TOPIC_LOCKED_MESSAGE =
   "This topic is locked to its current chat. Use the main chat to switch repos, branches, open inbox, or select or create another chat.";
@@ -300,10 +303,13 @@ export class TelegramConductorBridge {
   private readonly pendingInputRequests = new Map<string, PendingInputRequest>();
   private readonly sessionIdByThreadId = new Map<string, string>();
   private readonly contextViewers = new Map<string, ContextViewerState>();
+  private readonly interactionQueue = new KeyedSerialTaskQueue<string>();
+  private readonly queueDrainQueue = new KeyedSerialTaskQueue<string>();
   private readonly sessionPanels = new Map<string, SessionPanelState>();
   private readonly sessionPanelQueue = new KeyedSerialTaskQueue<string>();
   private readonly sessionStreams = new Map<string, SessionStreamState>();
   private readonly sessionStreamQueue = new KeyedSerialTaskQueue<string>();
+  private readonly backgroundTasks = new Set<Promise<void>>();
   private queueTimer: NodeJS.Timeout | null = null;
   private stopped = false;
 
@@ -342,6 +348,9 @@ export class TelegramConductorBridge {
         logger.error("failed to drain queue", error);
       });
     }, config.queueTickMs);
+    void this.drainQueues().catch((error) => {
+      logger.error("failed to drain queue", error);
+    });
 
     process.on("SIGINT", () => {
       void this.stop();
@@ -362,6 +371,9 @@ export class TelegramConductorBridge {
     if (this.queueTimer) {
       clearInterval(this.queueTimer);
       this.queueTimer = null;
+    }
+    if (this.backgroundTasks.size > 0) {
+      await Promise.allSettled(this.backgroundTasks);
     }
     await this.codex.stop();
   }
@@ -448,12 +460,14 @@ export class TelegramConductorBridge {
       return;
     }
 
-    if (text.startsWith("/")) {
-      await this.handleCommand(location, text);
-      return;
-    }
+    this.enqueueConversationTask(location, async () => {
+      if (text.startsWith("/")) {
+        await this.handleCommand(location, text);
+        return;
+      }
 
-    await this.handlePlainText(location, text);
+      await this.handlePlainText(location, text);
+    });
   }
 
   private async handleCallback(callback: TelegramCallbackQuery): Promise<void> {
@@ -481,7 +495,9 @@ export class TelegramConductorBridge {
 
     if (data === "home:help") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.safeSendMessage(location, buildHelpText());
+      this.enqueueConversationTask(location, async () => {
+        await this.safeSendMessage(location, buildHelpText());
+      });
       return;
     }
 
@@ -492,149 +508,186 @@ export class TelegramConductorBridge {
 
     if (data === "home:workspaces" || data === "home:repos") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showRepositories(location);
+      this.enqueueConversationTask(location, async () => {
+        await this.showRepositories(location);
+      });
       return;
     }
 
     if (data === "home:branches") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showBranches(location);
+      this.enqueueConversationTask(location, async () => {
+        await this.showBranches(location);
+      });
       return;
     }
 
     if (data === "home:sessions" || data === "home:chats") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showChats(location);
+      this.enqueueConversationTask(location, async () => {
+        await this.showChats(location);
+      });
       return;
     }
 
     if (data === "home:inbox") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showInbox(location);
+      this.enqueueConversationTask(location, async () => {
+        await this.showInbox(location);
+      });
       return;
     }
 
     if (data === "home:continue") {
       await this.telegram.answerCallbackQuery(callback.id);
-      const session = this.resolveSelectedSession(location);
-      if (!session) {
-        if (this.isDedicatedTopicLocation(location)) {
-          await this.safeSendMessage(location, TOPIC_LOCKED_MESSAGE);
+      this.enqueueConversationTask(location, async () => {
+        const session = this.resolveSelectedSession(location);
+        if (!session) {
+          if (this.isDedicatedTopicLocation(location)) {
+            await this.safeSendMessage(location, TOPIC_LOCKED_MESSAGE);
+            return;
+          }
+          const context = this.stateStore.getConversationContext(location);
+          if (context.activeWorkspaceId) {
+            await this.showChats(location, "Select a chat first.");
+          } else {
+            await this.showRepositories(location, "Select a repo and branch before selecting a chat.");
+          }
           return;
         }
-        const context = this.stateStore.getConversationContext(location);
-        if (context.activeWorkspaceId) {
-          await this.showChats(location, "Select a chat first.");
-        } else {
-          await this.showRepositories(location, "Select a repo and branch before selecting a chat.");
+        if (
+          await this.moveSessionToDedicatedTopicIfNeeded(
+            location,
+            session,
+            `Continuing: ${formatSessionTitle(session.title)}`,
+          )
+        ) {
+          return;
         }
-        return;
-      }
-      if (
-        await this.moveSessionToDedicatedTopicIfNeeded(
-          location,
-          session,
-          `Continuing: ${formatSessionTitle(session.title)}`,
-        )
-      ) {
-        return;
-      }
-      this.activateSessionLocation(location, session);
-      await this.showHome(location, `Continuing: ${formatSessionTitle(session.title)}`);
+        this.activateSessionLocation(location, session);
+        await this.showHome(location, `Continuing: ${formatSessionTitle(session.title)}`);
+      });
       return;
     }
 
     if (data === "home:new") {
       await this.telegram.answerCallbackQuery(callback.id);
-      const context = this.stateStore.getConversationContext(location);
-      if (!context.activeWorkspaceId) {
-        await this.showRepositories(location, "Select a repo and branch before creating a new chat.");
-        return;
-      }
-      this.stateStore.setConversationComposeMode(location, "new_session", {
-        composeWorkspaceId: context.activeWorkspaceId,
+      this.enqueueConversationTask(location, async () => {
+        const context = this.stateStore.getConversationContext(location);
+        if (!context.activeWorkspaceId) {
+          await this.showRepositories(location, "Select a repo and branch before creating a new chat.");
+          return;
+        }
+        this.stateStore.setConversationComposeMode(location, "new_session", {
+          composeWorkspaceId: context.activeWorkspaceId,
+        });
+        await this.safeSendMessage(location, "Your next message will create a new chat on the current branch.");
       });
-      await this.safeSendMessage(location, "Your next message will create a new chat on the current branch.");
       return;
     }
 
     if (data === "home:new-workspace") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.prepareNewWorkspace(location);
+      this.enqueueConversationTask(location, async () => {
+        await this.prepareNewWorkspace(location);
+      });
       return;
     }
 
     if (data === "home:stop") {
-      const text = await this.interruptCurrentTurn(location, { suppressMessage: true });
-      await this.telegram.answerCallbackQuery(callback.id, text);
+      await this.telegram.answerCallbackQuery(callback.id, "Stopping...");
+      this.enqueueConversationTask(location, async () => {
+        const text = await this.interruptCurrentTurn(location, { suppressMessage: true });
+        if (text !== "Interrupt requested.") {
+          await this.safeSendMessage(location, text);
+        }
+      });
       return;
     }
 
     if (data === "back:home") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.showHome(location);
+      this.enqueueConversationTask(location, async () => {
+        await this.showHome(location);
+      });
       return;
     }
 
     if (data === "plan:approve") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.approvePlan(location);
+      this.enqueueConversationTask(location, async () => {
+        await this.approvePlan(location);
+      });
       return;
     }
 
     if (data === "plan:revise") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.preparePlanRevision(location);
+      this.enqueueConversationTask(location, async () => {
+        await this.preparePlanRevision(location);
+      });
       return;
     }
 
     if (data === "reply:now") {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.prepareReply(location);
+      this.enqueueConversationTask(location, async () => {
+        await this.prepareReply(location);
+      });
       return;
     }
 
     if (data.startsWith("repo:")) {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.selectRepository(location, data.slice("repo:".length));
+      this.enqueueConversationTask(location, async () => {
+        await this.selectRepository(location, data.slice("repo:".length));
+      });
       return;
     }
 
     if (data.startsWith("repo-new:")) {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.prepareNewWorkspace(location, data.slice("repo-new:".length));
+      this.enqueueConversationTask(location, async () => {
+        await this.prepareNewWorkspace(location, data.slice("repo-new:".length));
+      });
       return;
     }
 
     if (data.startsWith("branch:")) {
       await this.telegram.answerCallbackQuery(callback.id);
-      await this.selectBranch(location, data.slice("branch:".length));
+      this.enqueueConversationTask(location, async () => {
+        await this.selectBranch(location, data.slice("branch:".length));
+      });
       return;
     }
 
     if (data.startsWith("workspace:")) {
       await this.telegram.answerCallbackQuery(callback.id);
-      const id = data.slice("workspace:".length);
-      if (this.registry.getWorkspaceById(id)) {
-        await this.selectBranch(location, id);
-        return;
-      }
-      await this.selectRepository(location, id);
+      this.enqueueConversationTask(location, async () => {
+        const id = data.slice("workspace:".length);
+        if (this.registry.getWorkspaceById(id)) {
+          await this.selectBranch(location, id);
+          return;
+        }
+        await this.selectRepository(location, id);
+      });
       return;
     }
 
     if (data.startsWith("session:")) {
       await this.telegram.answerCallbackQuery(callback.id);
-      const id = data.slice("session:".length);
-      if (this.registry.getSessionById(id)) {
-        await this.selectChat(location, id);
-        return;
-      }
-      if (this.registry.getWorkspaceById(id)) {
-        await this.selectBranch(location, id);
-        return;
-      }
-      await this.safeSendMessage(location, "Chat not found.");
+      this.enqueueConversationTask(location, async () => {
+        const id = data.slice("session:".length);
+        if (this.registry.getSessionById(id)) {
+          await this.selectChat(location, id);
+          return;
+        }
+        if (this.registry.getWorkspaceById(id)) {
+          await this.selectBranch(location, id);
+          return;
+        }
+        await this.safeSendMessage(location, "Chat not found.");
+      });
       return;
     }
 
@@ -1298,8 +1351,7 @@ export class TelegramConductorBridge {
 
     this.sessionIdByThreadId.set(session.claudeSessionId, session.id);
     const existingRuntime = this.runtimes.get(session.id);
-    this.runtimes.set(
-      session.id,
+    const runtime =
       existingRuntime && existingRuntime.turnId === turnId
         ? {
             ...existingRuntime,
@@ -1313,13 +1365,13 @@ export class TelegramConductorBridge {
             sessionId: session.id,
             threadId: session.claudeSessionId,
             turnId,
-            status: "active",
+            status: "active" as const,
             assistantText: "",
             lastEventAt: null,
             planText: null,
             model: session.model,
-          },
-    );
+          };
+    this.runtimes.set(session.id, runtime);
 
     this.mirror.updateSessionStatus(session.id, "working");
     this.mirror.appendUserMessage({
@@ -1328,10 +1380,7 @@ export class TelegramConductorBridge {
       text,
       sentAt: new Date().toISOString(),
     });
-
-    if (!fromQueue && !options?.suppressSentConfirmation && location.messageThreadId === null) {
-      await this.safeSendMessage(location, "Sent.");
-    }
+    await this.pushRuntimeUpdate(runtime);
     return "submitted";
   }
 
@@ -1671,6 +1720,34 @@ export class TelegramConductorBridge {
       return;
     }
     await this.safeSendMessage(location, TOPIC_LOCKED_MESSAGE);
+  }
+
+  private enqueueConversationTask(location: TelegramConversationTarget, task: () => Promise<void>): void {
+    const queued = this.interactionQueue.run(conversationKey(location), task).catch(async (error) => {
+      logger.error("failed to handle conversation task", {
+        chatId: location.chatId,
+        messageThreadId: location.messageThreadId,
+        error,
+      });
+      await this.safeSendMessage(location, "Failed to process that message. Please try again.").catch(() => undefined);
+    });
+
+    this.trackBackgroundTask(queued);
+  }
+
+  private requestQueueDrain(sessionId: string): void {
+    const queued = this.queueDrainQueue.run(sessionId, async () => {
+      await this.drainQueueForSession(sessionId);
+    });
+
+    this.trackBackgroundTask(queued);
+  }
+
+  private trackBackgroundTask(task: Promise<void>): void {
+    this.backgroundTasks.add(task);
+    void task.finally(() => {
+      this.backgroundTasks.delete(task);
+    });
   }
 
   private buildInputAnswers(questions: PendingInputQuestion[], text: string): Record<string, { answers: string[] }> {
@@ -2093,7 +2170,7 @@ export class TelegramConductorBridge {
 
     this.pendingInputRequests.delete(sessionId);
     this.runtimes.delete(sessionId);
-    await this.drainQueueForSession(sessionId);
+    this.requestQueueDrain(sessionId);
   }
 
   private async onThreadStatusChanged(params: Record<string, unknown>): Promise<void> {
@@ -2275,7 +2352,7 @@ export class TelegramConductorBridge {
 
   private async drainQueues(): Promise<void> {
     for (const sessionId of this.stateStore.listQueuedSessionIds()) {
-      await this.drainQueueForSession(sessionId);
+      this.requestQueueDrain(sessionId);
     }
   }
 
@@ -2421,16 +2498,25 @@ export class TelegramConductorBridge {
     switch (data) {
       case "panel:refresh":
         await this.telegram.answerCallbackQuery(callback.id, "Refreshing...");
-        await this.renderSessionPanel(location);
+        this.enqueueConversationTask(location, async () => {
+          await this.renderSessionPanel(location);
+        });
         return;
       case "panel:interrupt": {
-        const text = await this.interruptCurrentTurn(location, { suppressMessage: true });
-        await this.telegram.answerCallbackQuery(callback.id, text);
+        await this.telegram.answerCallbackQuery(callback.id, "Stopping...");
+        this.enqueueConversationTask(location, async () => {
+          const text = await this.interruptCurrentTurn(location, { suppressMessage: true });
+          if (text !== "Interrupt requested.") {
+            await this.safeSendMessage(location, text);
+          }
+        });
         return;
       }
       case "panel:close":
         await this.telegram.answerCallbackQuery(callback.id);
-        await this.closeSessionPanel(location);
+        this.enqueueConversationTask(location, async () => {
+          await this.closeSessionPanel(location);
+        });
         return;
       default:
         await this.telegram.answerCallbackQuery(callback.id, "Not implemented yet");
@@ -2453,9 +2539,7 @@ export class TelegramConductorBridge {
       (context.activeWorkspaceId ? this.registry.getWorkspaceById(context.activeWorkspaceId) : null);
     const session = options?.session ?? this.resolveSelectedSession(location);
     const runtime = options?.runtime ?? (session ? (this.runtimes.get(session.id) ?? null) : null);
-    const queueCount = session
-      ? this.stateStore.listQueueForSession(session.id, 50).filter((item) => item.status === "queued").length
-      : 0;
+    const queueCount = session ? this.stateStore.countQueuedPrompts(session.id) : 0;
     const body = await this.resolveSessionPanelBody(session, runtime, options?.bodyOverride);
     const lines = [
       formatStatusLine(
@@ -2659,6 +2743,7 @@ export class TelegramConductorBridge {
   ): Promise<void> {
     const key = conversationKey(location);
     await this.sessionPanelQueue.run(key, async () => {
+      const now = Date.now();
       const keyboardFingerprint = JSON.stringify(keyboard);
       const existing = this.sessionPanels.get(key);
       if (
@@ -2671,12 +2756,24 @@ export class TelegramConductorBridge {
         return;
       }
 
+      if (
+        existing &&
+        existing.messageId &&
+        existing.sessionId === sessionId &&
+        now - existing.lastSentAt < PANEL_EDIT_INTERVAL_MS &&
+        existing.keyboardFingerprint === keyboardFingerprint &&
+        text.length - existing.lastText.length < PANEL_EAGER_EDIT_CHARS
+      ) {
+        return;
+      }
+
       if (existing?.messageId) {
         try {
           await this.telegram.editMessageText(location.chatId, existing.messageId, text, keyboard);
           this.sessionPanels.set(key, {
             keyboardFingerprint,
             lastText: text,
+            lastSentAt: now,
             messageId: existing.messageId,
             sessionId,
           });
@@ -2686,6 +2783,7 @@ export class TelegramConductorBridge {
             this.sessionPanels.set(key, {
               keyboardFingerprint,
               lastText: text,
+              lastSentAt: now,
               messageId: existing.messageId,
               sessionId,
             });
@@ -2702,6 +2800,7 @@ export class TelegramConductorBridge {
       this.sessionPanels.set(key, {
         keyboardFingerprint,
         lastText: text,
+        lastSentAt: now,
         messageId,
         sessionId,
       });
@@ -2744,39 +2843,49 @@ export class TelegramConductorBridge {
       return;
     }
 
-    let notice: string | undefined;
     switch (data) {
       case "context:older":
-        if (viewer.pageIndex > 0) {
-          viewer.pageIndex -= 1;
-        } else {
-          notice = "Already at the oldest page.";
+        if (viewer.pageIndex <= 0) {
+          await this.telegram.answerCallbackQuery(callback.id, "Already at the oldest page.");
+          return;
         }
+        viewer.pageIndex -= 1;
+        await this.telegram.answerCallbackQuery(callback.id);
         break;
       case "context:newer":
-        if (viewer.pageIndex < viewer.pages.length - 1) {
-          viewer.pageIndex += 1;
-        } else {
-          notice = "Already at the newest page.";
+        if (viewer.pageIndex >= viewer.pages.length - 1) {
+          await this.telegram.answerCallbackQuery(callback.id, "Already at the newest page.");
+          return;
         }
+        viewer.pageIndex += 1;
+        await this.telegram.answerCallbackQuery(callback.id);
         break;
       case "context:refresh":
         await this.telegram.answerCallbackQuery(callback.id, "Refreshing...");
-        notice = await this.refreshContextViewer(viewer);
         break;
       case "context:close":
         await this.telegram.answerCallbackQuery(callback.id);
-        await this.closeContextViewer(viewer);
+        this.enqueueConversationTask(location, async () => {
+          await this.closeContextViewer(viewer);
+        });
         return;
       default:
         await this.telegram.answerCallbackQuery(callback.id, "Not implemented yet");
         return;
     }
 
-    await this.renderContextViewer(viewer);
-    if (notice && data !== "context:refresh") {
-      await this.telegram.answerCallbackQuery(callback.id, notice);
-    }
+    this.enqueueConversationTask(location, async () => {
+      if (data === "context:refresh") {
+        const notice = await this.refreshContextViewer(viewer);
+        await this.renderContextViewer(viewer);
+        if (notice && notice !== "Refreshed.") {
+          await this.safeSendMessage(location, notice);
+        }
+        return;
+      }
+
+      await this.renderContextViewer(viewer);
+    });
   }
 
   private async refreshContextViewer(viewer: ContextViewerState): Promise<string | undefined> {
