@@ -1644,15 +1644,7 @@ export class TelegramConductorBridge {
   }
 
   private isTopicLockedCommand(command: string): boolean {
-    return [
-      "/repos",
-      "/workspaces",
-      "/branches",
-      "/chats",
-      "/sessions",
-      "/new",
-      "/new_workspace",
-    ].includes(command);
+    return ["/repos", "/workspaces", "/branches", "/chats", "/sessions", "/new", "/new_workspace"].includes(command);
   }
 
   private isTopicLockedCallback(data: string): boolean {
@@ -1673,10 +1665,7 @@ export class TelegramConductorBridge {
     );
   }
 
-  private async rejectTopicLockedAction(
-    location: TelegramConversationTarget,
-    callbackId?: string,
-  ): Promise<void> {
+  private async rejectTopicLockedAction(location: TelegramConversationTarget, callbackId?: string): Promise<void> {
     if (callbackId) {
       await this.telegram.answerCallbackQuery(callbackId, TOPIC_LOCKED_CALLBACK_TEXT);
       return;
