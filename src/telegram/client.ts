@@ -27,6 +27,7 @@ const RETRYABLE_NETWORK_ERROR_CODES = new Set([
 ]);
 
 interface TelegramRequestOptions {
+  lane?: TelegramRequestLane;
   timeoutMs?: number;
 }
 
@@ -40,6 +41,8 @@ interface TelegramApiResponse {
   error_code?: number;
   parameters?: TelegramApiParameters;
 }
+
+type TelegramRequestLane = "callback" | "control" | "poll" | "write";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -238,7 +241,7 @@ async function readTelegramApiError(
 
 export class TelegramClient {
   private readonly baseUrl: string;
-  private retryAfterDeadlineMs = 0;
+  private readonly retryAfterDeadlineMsByLane = new Map<TelegramRequestLane, number>();
 
   constructor(token: string) {
     this.baseUrl = `https://api.telegram.org/bot${token}`;
@@ -255,6 +258,7 @@ export class TelegramClient {
             allowed_updates: ["message", "callback_query"],
           },
           {
+            lane: "poll",
             timeoutMs: timeoutSeconds * 1000 + POLL_TIMEOUT_BUFFER_MS,
           },
         );
@@ -269,21 +273,29 @@ export class TelegramClient {
   }
 
   async sendMessage(chatId: number, text: string, options?: TelegramSendMessageOptions): Promise<number | null> {
-    const response = await this.callApi<{ ok: boolean; result?: { message_id: number } }>("sendMessage", {
-      chat_id: chatId,
-      text,
-      message_thread_id: options?.message_thread_id,
-      disable_web_page_preview: options?.disable_web_page_preview ?? true,
-      reply_markup: options?.reply_markup,
-    });
+    const response = await this.callApi<{ ok: boolean; result?: { message_id: number } }>(
+      "sendMessage",
+      {
+        chat_id: chatId,
+        text,
+        message_thread_id: options?.message_thread_id,
+        disable_web_page_preview: options?.disable_web_page_preview ?? true,
+        reply_markup: options?.reply_markup,
+      },
+      { lane: "write" },
+    );
     return response.result?.message_id ?? null;
   }
 
   async createForumTopic(chatId: number, name: string): Promise<TelegramForumTopic> {
-    const response = await this.callApi<{ ok: boolean; result: TelegramForumTopic }>("createForumTopic", {
-      chat_id: chatId,
-      name,
-    });
+    const response = await this.callApi<{ ok: boolean; result: TelegramForumTopic }>(
+      "createForumTopic",
+      {
+        chat_id: chatId,
+        name,
+      },
+      { lane: "write" },
+    );
     return response.result;
   }
 
@@ -293,38 +305,54 @@ export class TelegramClient {
     text: string,
     inlineKeyboard?: TelegramInlineKeyboard,
   ): Promise<void> {
-    await this.callApi("editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
-      text,
-      reply_markup: inlineKeyboard ? { inline_keyboard: inlineKeyboard } : undefined,
-      disable_web_page_preview: true,
-    });
+    await this.callApi(
+      "editMessageText",
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        reply_markup: inlineKeyboard ? { inline_keyboard: inlineKeyboard } : undefined,
+        disable_web_page_preview: true,
+      },
+      { lane: "write" },
+    );
   }
 
   async deleteMessage(chatId: number, messageId: number): Promise<void> {
-    await this.callApi("deleteMessage", {
-      chat_id: chatId,
-      message_id: messageId,
-    });
+    await this.callApi(
+      "deleteMessage",
+      {
+        chat_id: chatId,
+        message_id: messageId,
+      },
+      { lane: "write" },
+    );
   }
 
   async setMyCommands(commands: TelegramBotCommand[]): Promise<void> {
-    await this.callApi("setMyCommands", {
-      commands: commands.map((command) => ({
-        command: command.command,
-        description: command.description,
-      })),
-    });
+    await this.callApi(
+      "setMyCommands",
+      {
+        commands: commands.map((command) => ({
+          command: command.command,
+          description: command.description,
+        })),
+      },
+      { lane: "control" },
+    );
   }
 
   async answerCallbackQuery(callbackQueryId: string, text?: string): Promise<void> {
     try {
-      await this.callApi("answerCallbackQuery", {
-        callback_query_id: callbackQueryId,
-        text,
-        show_alert: false,
-      });
+      await this.callApi(
+        "answerCallbackQuery",
+        {
+          callback_query_id: callbackQueryId,
+          text,
+          show_alert: false,
+        },
+        { lane: "callback" },
+      );
     } catch (error) {
       if (isExpiredCallbackQueryError(error)) {
         return;
@@ -338,8 +366,10 @@ export class TelegramClient {
     body: Record<string, unknown>,
     options?: TelegramRequestOptions,
   ): Promise<T> {
+    const lane = options?.lane ?? "control";
+
     for (;;) {
-      await this.waitForRetryWindow();
+      await this.waitForRetryWindow(lane);
 
       let response: Response;
       const requestInit: RequestInit = {
@@ -361,7 +391,7 @@ export class TelegramClient {
       if (!response.ok) {
         const apiError = await readTelegramApiError(response);
         if (apiError.retryAfterSeconds !== null) {
-          this.deferUntilRetryWindow(apiError.retryAfterSeconds);
+          this.deferUntilRetryWindow(lane, apiError.retryAfterSeconds);
           continue;
         }
         throw new TelegramApiError(method, apiError.status, apiError.description, apiError.retryAfterSeconds);
@@ -372,7 +402,7 @@ export class TelegramClient {
         const status = typeof data.error_code === "number" ? data.error_code : response.status;
         const retryAfterSeconds = getTelegramRetryAfterSeconds(data.parameters, description);
         if (retryAfterSeconds !== null) {
-          this.deferUntilRetryWindow(retryAfterSeconds);
+          this.deferUntilRetryWindow(lane, retryAfterSeconds);
           continue;
         }
         throw new TelegramApiError(method, status, description, retryAfterSeconds);
@@ -381,17 +411,18 @@ export class TelegramClient {
     }
   }
 
-  private deferUntilRetryWindow(retryAfterSeconds: number): void {
+  private deferUntilRetryWindow(lane: TelegramRequestLane, retryAfterSeconds: number): void {
     const retryAfterMs = Math.ceil(retryAfterSeconds * 1000);
     const deadline = Date.now() + retryAfterMs;
-    if (deadline > this.retryAfterDeadlineMs) {
-      this.retryAfterDeadlineMs = deadline;
+    const currentDeadline = this.retryAfterDeadlineMsByLane.get(lane) ?? 0;
+    if (deadline > currentDeadline) {
+      this.retryAfterDeadlineMsByLane.set(lane, deadline);
     }
   }
 
-  private async waitForRetryWindow(): Promise<void> {
+  private async waitForRetryWindow(lane: TelegramRequestLane): Promise<void> {
     for (;;) {
-      const delayMs = this.retryAfterDeadlineMs - Date.now();
+      const delayMs = (this.retryAfterDeadlineMsByLane.get(lane) ?? 0) - Date.now();
       if (delayMs <= 0) {
         return;
       }

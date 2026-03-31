@@ -48,7 +48,7 @@ const schema = z.object({
   CODEX_BIN: z.string().default("~/Library/Application Support/com.conductor.app/bin/codex"),
   WORKSPACES_ROOT: z.string().default("~/conductor/workspaces"),
   POLL_TIMEOUT_SECONDS: z.coerce.number().int().min(5).max(50).default(30),
-  QUEUE_TICK_MS: z.coerce.number().int().min(500).default(3000),
+  QUEUE_TICK_MS: z.coerce.number().int().min(250).default(750),
   PAGE_SIZE: z.coerce.number().int().min(5).max(30).default(12),
   DEFAULT_FALLBACK_MODEL: z.string().default("gpt-5.4"),
   DEFAULT_PERMISSION_MODE: z.string().default("default"),
