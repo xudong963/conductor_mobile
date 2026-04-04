@@ -40,7 +40,56 @@ The current version supports:
 - A Telegram Bot token is available
 - If you want to use the bridge in a forum-enabled Telegram supergroup, the bot should be added as an administrator so it can create topics and manage its status/context messages. In private chats, administrator permissions are not required.
 
-## Setup
+## Install Without Cloning the Repo
+
+Install the published CLI package:
+
+```bash
+npm install -g conductor-tg
+```
+
+Create the default config file:
+
+```bash
+conductor-tg setup
+```
+
+The setup command writes the config to:
+
+```text
+~/Library/Application Support/conductor-tg/.env
+```
+
+It asks for at least these two values:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_ALLOWED_CHAT_IDS`
+
+Set `TELEGRAM_ALLOWED_CHAT_IDS` to the Telegram chat IDs that may use the bridge. Separate multiple IDs with commas.
+
+If you prefer manual editing instead of the interactive setup flow, run:
+
+```bash
+conductor-tg init
+```
+
+That command only creates the template file. After that, open `~/Library/Application Support/conductor-tg/.env` and fill in the required values yourself.
+
+Then start the bridge:
+
+```bash
+conductor-tg
+```
+
+The packaged install stores its local state DB at:
+
+```text
+~/Library/Application Support/conductor-tg/bridge.db
+```
+
+If you want to keep the config somewhere else, set `BRIDGE_ENV_PATH` before launching the bridge.
+
+## Development Setup From Source
 
 1. Install dependencies
 
@@ -68,10 +117,16 @@ Set `TELEGRAM_ALLOWED_CHAT_IDS` to the Telegram chat IDs that may use the bridge
 Run the bridge on the same computer where Conductor is installed:
 
 ```bash
+conductor-tg
+```
+
+If you are working from a source checkout instead of the published package:
+
+```bash
 npm start
 ```
 
-Development mode:
+Development mode from source:
 
 ```bash
 npm run dev
@@ -81,7 +136,8 @@ npm run dev
 
 If you want the bridge to stay available after login, use a user `LaunchAgent` via `launchd`.
 `Launchpad` is only an app launcher; it does not keep a CLI process alive.
-If you set this up, make sure the process starts from the repo root so it can find `.env` and `.context/`.
+With the published CLI package, the process no longer needs to start from the repo root.
+Point `launchd` at the `conductor-tg` executable, and set `BRIDGE_ENV_PATH` only if you do not want to use the default config path above.
 If your Node.js installation only exists in an interactive shell setup such as `nvm`, `launchd` may not see it.
 
 ## Telegram Commands
