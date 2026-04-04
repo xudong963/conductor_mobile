@@ -11,8 +11,10 @@ import type {
   SessionMessageRecord,
   SessionSeed,
   SessionStatus,
+  SupportedAgentType,
   WorkspaceRef,
 } from "../types.js";
+import { branchLookupCandidates, matchesRemoteBranchName } from "../utils/branch-name.js";
 import { sortRepositoryWorkspaces, type RepositoryWorkspacePriorityRef } from "../utils/workspace-priority.js";
 
 interface DbSessionRow {
@@ -41,12 +43,15 @@ interface DbRepositoryRow extends RepositoryRef {
   remote: string | null;
 }
 
+const MERGED_BRANCH_CACHE_TTL_MS = 3_000;
+
 export class ConductorRegistryAdapter {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly db: any;
   private readonly workspacesRoot: string;
   private readonly defaultFallbackModel: string;
   private readonly defaultPermissionMode: string;
+  private readonly mergedBranchNamesCache = new Map<string, { expiresAt: number; names: Set<string> }>();
 
   constructor(
     conductorDbPath: string,
@@ -159,30 +164,41 @@ export class ConductorRegistryAdapter {
   }
 
   findWorkspaceByBranch(repositoryId: string, branchName: string): WorkspaceRef | null {
-    const row = this.db
-      .prepare(
-        `
-          SELECT
-            w.id,
-            w.directory_name as directoryName,
-            w.branch as branch,
-            w.pr_title as prTitle,
-            s.title as activeSessionTitle,
-            w.repository_id as repositoryId,
-            w.active_session_id as activeSessionId,
-            w.updated_at as updatedAt,
-            r.root_path as rootPath,
-            r.name as repositoryName
-          FROM workspaces w
-          JOIN repos r ON r.id = w.repository_id
-          LEFT JOIN sessions s ON s.id = w.active_session_id
-          WHERE w.repository_id = ?
-            AND w.branch = ?
-          LIMIT 1
-        `,
-      )
-      .get(repositoryId, branchName.trim()) as WorkspaceRef | undefined;
-    return row ?? null;
+    const candidates = branchLookupCandidates(branchName);
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    const query = this.db.prepare(
+      `
+        SELECT
+          w.id,
+          w.directory_name as directoryName,
+          w.branch as branch,
+          w.pr_title as prTitle,
+          s.title as activeSessionTitle,
+          w.repository_id as repositoryId,
+          w.active_session_id as activeSessionId,
+          w.updated_at as updatedAt,
+          r.root_path as rootPath,
+          r.name as repositoryName
+        FROM workspaces w
+        JOIN repos r ON r.id = w.repository_id
+        LEFT JOIN sessions s ON s.id = w.active_session_id
+        WHERE w.repository_id = ?
+          AND w.branch = ?
+        LIMIT 1
+      `,
+    );
+
+    for (const candidate of candidates) {
+      const row = query.get(repositoryId, candidate) as WorkspaceRef | undefined;
+      if (row) {
+        return row;
+      }
+    }
+
+    return null;
   }
 
   listWorkspacesForRepository(repositoryId: string, limit: number): WorkspaceRef[] {
@@ -255,6 +271,11 @@ export class ConductorRegistryAdapter {
 
   private getMergedBranchNames(rootPath: string, defaultBranch: string | null | undefined): Set<string> {
     const normalizedDefaultBranch = defaultBranch?.trim() || "master";
+    const cacheKey = `${rootPath}\u0000${normalizedDefaultBranch}`;
+    const cached = this.mergedBranchNamesCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.names;
+    }
 
     for (const targetRef of [normalizedDefaultBranch, `origin/${normalizedDefaultBranch}`]) {
       try {
@@ -272,7 +293,7 @@ export class ConductorRegistryAdapter {
           { encoding: "utf8" },
         );
 
-        return new Set(
+        const names = new Set(
           output
             .split("\n")
             .map((line) => line.trim())
@@ -289,12 +310,31 @@ export class ConductorRegistryAdapter {
               return [];
             }),
         );
+        this.mergedBranchNamesCache.set(cacheKey, {
+          expiresAt: Date.now() + MERGED_BRANCH_CACHE_TTL_MS,
+          names,
+        });
+        return names;
       } catch {
         continue;
       }
     }
 
-    return new Set<string>();
+    const empty = new Set<string>();
+    this.mergedBranchNamesCache.set(cacheKey, {
+      expiresAt: Date.now() + MERGED_BRANCH_CACHE_TTL_MS,
+      names: empty,
+    });
+    return empty;
+  }
+
+  private invalidateMergedBranchNamesCache(rootPath: string): void {
+    const prefix = `${rootPath}\u0000`;
+    for (const key of this.mergedBranchNamesCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.mergedBranchNamesCache.delete(key);
+      }
+    }
   }
 
   listSessions(workspaceId: string, limit: number): ConductorSessionRef[] {
@@ -429,9 +469,39 @@ export class ConductorRegistryAdapter {
       defaultPlanMode === "true" || defaultPlanMode === "1" ? "plan" : this.defaultPermissionMode;
 
     return {
+      agentType: this.getPreferredAgentTypeForWorkspace(workspaceId),
       model: active?.model ?? defaultModel ?? this.defaultFallbackModel,
       permissionMode: active?.permissionMode ?? permissionFromSetting,
     };
+  }
+
+  getPreferredAgentTypeForWorkspace(workspaceId: string): SupportedAgentType {
+    const active = this.db
+      .prepare(
+        `
+          SELECT s.agent_type as agentType
+          FROM workspaces w
+          LEFT JOIN sessions s
+            ON s.id = w.active_session_id
+          WHERE w.id = ?
+          LIMIT 1
+        `,
+      )
+      .get(workspaceId) as { agentType: string | null } | undefined;
+    const latest = this.db
+      .prepare(
+        `
+          SELECT agent_type as agentType
+          FROM sessions
+          WHERE workspace_id = ?
+            AND IFNULL(is_hidden, 0) = 0
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `,
+      )
+      .get(workspaceId) as { agentType: string | null } | undefined;
+
+    return active?.agentType === "claude" || latest?.agentType === "claude" ? "claude" : "codex";
   }
 
   resolveWorkspacePath(workspaceId: string): string {
@@ -519,10 +589,10 @@ export class ConductorRegistryAdapter {
               created_at,
               updated_at
             )
-            VALUES (?, 'idle', ?, ?, 'codex', ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))
+            VALUES (?, 'idle', ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))
           `,
         )
-        .run(sessionId, threadId, workspaceId, seed.model, seed.permissionMode, seed.title);
+        .run(sessionId, threadId, workspaceId, seed.agentType ?? "codex", seed.model, seed.permissionMode, seed.title);
 
       this.db
         .prepare(
@@ -618,6 +688,7 @@ export class ConductorRegistryAdapter {
       if (!created) {
         throw new Error(`Failed to read back created workspace ${workspaceId}.`);
       }
+      this.invalidateMergedBranchNamesCache(repository.rootPath);
       return created;
     } catch (error) {
       if (worktreeCreated) {
@@ -660,12 +731,11 @@ export class ConductorRegistryAdapter {
       return null;
     }
 
-    const suffix = `/${branchName}`;
     const refs = output
       .split("\n")
       .map((line) => line.trim())
       .filter((line) => line && line !== "origin/HEAD")
-      .filter((line) => line.endsWith(suffix))
+      .filter((line) => matchesRemoteBranchName(line, branchName))
       .sort((left, right) => {
         const preferred = preferredRemote?.trim();
         const preferredRef = preferred ? `${preferred}/${branchName}` : null;

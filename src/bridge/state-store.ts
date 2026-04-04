@@ -637,6 +637,20 @@ export class BridgeStateStore {
       .all(sessionId, limit) as QueueItem[];
   }
 
+  countQueuedPrompts(sessionId: string): number {
+    const row = this.db
+      .prepare(
+        `
+          SELECT COUNT(*) as total
+          FROM prompt_queue
+          WHERE conductor_session_id = ?
+            AND status = 'queued'
+        `,
+      )
+      .get(sessionId) as { total: number } | undefined;
+    return row?.total ?? 0;
+  }
+
   getTelegramCursor(): number {
     const row = this.db
       .prepare(

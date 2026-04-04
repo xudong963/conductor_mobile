@@ -49,11 +49,13 @@ afterEach(() => {
 describe("buildCodexChildEnv", () => {
   it("strips bridge-only environment variables before spawning codex", () => {
     const childEnv = buildCodexChildEnv({
+      CLAUDE_BIN: "/tmp/claude",
       OPENAI_API_KEY: "keep-me",
       TELEGRAM_BOT_TOKEN: "drop-me",
       QUEUE_TICK_MS: "3000",
     });
 
+    expect(childEnv.CLAUDE_BIN).toBeUndefined();
     expect(childEnv.OPENAI_API_KEY).toBe("keep-me");
     expect(childEnv.TELEGRAM_BOT_TOKEN).toBeUndefined();
     expect(childEnv.QUEUE_TICK_MS).toBeUndefined();

@@ -337,6 +337,93 @@ describe("ConductorRegistryAdapter", () => {
     });
   });
 
+  it("finds an existing prefixed workspace when the branch name omits xudong963", () => {
+    const { adapter, db, tempDir } = createRegistryFixture();
+    const repositoryName = "telegram-bridge";
+    const sourceRepoPath = path.join(tempDir, "source-repo");
+
+    fs.mkdirSync(sourceRepoPath, { recursive: true });
+    runGit(["init", "--initial-branch=master"], sourceRepoPath);
+    runGit(["config", "user.name", "Test User"], sourceRepoPath);
+    runGit(["config", "user.email", "test@example.com"], sourceRepoPath);
+
+    fs.writeFileSync(path.join(sourceRepoPath, "README.md"), "initial\n", "utf8");
+    runGit(["add", "README.md"], sourceRepoPath);
+    runGit(["commit", "-m", "initial"], sourceRepoPath);
+
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", repositoryName, sourceRepoPath, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
+    db.prepare(
+      `
+        INSERT INTO workspaces (
+          id,
+          repository_id,
+          directory_name,
+          branch,
+          pr_title,
+          archive_commit,
+          active_session_id,
+          updated_at,
+          state
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+    ).run("workspace-1", "repo-1", "berlin", "xudong963/berlin", null, null, null, "2026-03-29T04:00:00.000Z", "ready");
+
+    const workspace = adapter.findWorkspaceByBranch("repo-1", "berlin");
+
+    expect(workspace?.id).toBe("workspace-1");
+    expect(workspace?.branch).toBe("xudong963/berlin");
+  });
+
+  it("creates an unqualified branch from the base branch instead of a prefixed remote-tracking branch", () => {
+    const { adapter, db, tempDir } = createRegistryFixture();
+    const repositoryName = "telegram-bridge";
+    const sourceRepoPath = path.join(tempDir, "source-repo");
+
+    fs.mkdirSync(sourceRepoPath, { recursive: true });
+    runGit(["init", "--initial-branch=master"], sourceRepoPath);
+    runGit(["config", "user.name", "Test User"], sourceRepoPath);
+    runGit(["config", "user.email", "test@example.com"], sourceRepoPath);
+
+    fs.writeFileSync(path.join(sourceRepoPath, "README.md"), "initial\n", "utf8");
+    runGit(["add", "README.md"], sourceRepoPath);
+    runGit(["commit", "-m", "initial"], sourceRepoPath);
+
+    const masterCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: sourceRepoPath,
+      encoding: "utf8",
+    }).trim();
+
+    runGit(["switch", "-c", "personal-branch"], sourceRepoPath);
+    fs.writeFileSync(path.join(sourceRepoPath, "feature.txt"), "feature\n", "utf8");
+    runGit(["add", "feature.txt"], sourceRepoPath);
+    runGit(["commit", "-m", "personal branch"], sourceRepoPath);
+    const personalCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: sourceRepoPath,
+      encoding: "utf8",
+    }).trim();
+    runGit(["switch", "master"], sourceRepoPath);
+    runGit(["update-ref", "refs/remotes/origin/xudong963/berlin", personalCommit], sourceRepoPath);
+
+    db.prepare(
+      `INSERT INTO repos (id, name, root_path, default_branch, updated_at, remote, hidden) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+    ).run("repo-1", repositoryName, sourceRepoPath, "master", "2026-03-29T04:00:00.000Z", "origin", 0);
+
+    const workspace = adapter.createWorkspace("repo-1", "berlin");
+    const workspaceHead = execFileSync(
+      "git",
+      ["-C", path.join(tempDir, "workspaces", repositoryName, "berlin"), "rev-parse", "HEAD"],
+      {
+        encoding: "utf8",
+      },
+    ).trim();
+
+    expect(workspace.branch).toBe("berlin");
+    expect(workspaceHead).toBe(masterCommit);
+    expect(workspaceHead).not.toBe(personalCommit);
+  });
+
   it("allocates a versioned directory name when the branch tail is already taken", () => {
     const { adapter, db, tempDir } = createRegistryFixture();
     const repositoryName = "telegram-bridge";

@@ -1,4 +1,5 @@
 import type { ConductorSessionRef, RepositoryRef, SessionMessageRecord, WorkspaceRef } from "../types.js";
+import { stripOmittedBranchPrefix } from "./branch-name.js";
 
 type ContextRenderMode = "preview" | "full";
 
@@ -52,7 +53,7 @@ export function formatBranchName(workspace: Pick<WorkspaceRef, "branch" | "direc
   }
   const branchName = workspace.branch?.trim();
   if (branchName) {
-    return branchName;
+    return stripOmittedBranchPrefix(branchName);
   }
   const directoryName = workspace.directoryName.trim();
   return directoryName || "No branch";
