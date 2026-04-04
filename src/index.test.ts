@@ -58,6 +58,21 @@ async function flushBackgroundTasks(bridge: TelegramConductorBridge): Promise<vo
   }
 }
 
+type TestRuntime = {
+  activityText: string | null;
+  assistantText: string;
+  lastEventAt: string | null;
+  model: string | null;
+  planText: string | null;
+  sessionId: string;
+  settling: boolean;
+  status: "active" | "cancelling" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
+  threadId: string;
+  turnId: string;
+};
+
+type TestKeyboard = Array<Array<{ text: string; callback_data: string }>>;
+
 function createBridge() {
   const claude = {
     interruptTurn: vi.fn().mockResolvedValue(undefined),
@@ -75,6 +90,7 @@ function createBridge() {
     startTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
   };
   const mirror = {
+    appendAssistantMessage: vi.fn(),
     appendUserMessage: vi.fn(),
     updateSessionStatus: vi.fn(),
   };
@@ -91,6 +107,7 @@ function createBridge() {
     clearConversationComposeMode: vi.fn(),
     bindSessionTopic: vi.fn(),
     countQueuedPrompts: vi.fn().mockReturnValue(0),
+    enqueuePrompt: vi.fn(),
     findFollowingTopic: vi.fn(),
     getConversationContext: vi.fn(),
     getSessionTopic: vi.fn(),
@@ -455,6 +472,7 @@ describe("TelegramConductorBridge", () => {
         model: null,
         planText: null,
         sessionId: "session-1",
+        settling: false,
         status: "active",
         threadId: "thread-1",
         turnId: "turn-1",
@@ -560,6 +578,7 @@ describe("TelegramConductorBridge", () => {
             model: string | null;
             planText: string | null;
             sessionId: string;
+            settling: boolean;
             status: "active" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
             threadId: string;
             turnId: string;
@@ -573,6 +592,7 @@ describe("TelegramConductorBridge", () => {
       model: null,
       planText: null,
       sessionId: "session-1",
+      settling: false,
       status: "active",
       threadId: "thread-1",
       turnId: "turn-1",
@@ -674,9 +694,187 @@ describe("TelegramConductorBridge", () => {
     );
   });
 
-  it("schedules queue drain after a turn completes instead of awaiting it inline", async () => {
+  it("waits for a completed turn to settle before draining the queue", async () => {
+    vi.useFakeTimers();
     const { bridge, registry } = createBridge();
     const requestQueueDrain = vi.fn();
+    const pushRuntimeUpdate = vi.fn().mockResolvedValue(undefined);
+
+    try {
+      registry.findSessionByThreadId.mockReturnValue({ id: "session-1" });
+      registry.getSessionById.mockReturnValue({
+        id: "session-1",
+        workspaceId: "workspace-1",
+        status: "working",
+        model: "gpt-5.4",
+        title: "Fix freezing issue",
+      });
+      (bridge as unknown as { requestQueueDrain: typeof requestQueueDrain }).requestQueueDrain = requestQueueDrain;
+      (bridge as unknown as { pushRuntimeUpdate: typeof pushRuntimeUpdate }).pushRuntimeUpdate = pushRuntimeUpdate;
+      (
+        bridge as unknown as {
+          runtimes: Map<
+            string,
+            {
+              activityText: string | null;
+              assistantText: string;
+              lastEventAt: string | null;
+              model: string | null;
+              planText: string | null;
+              sessionId: string;
+              settling: boolean;
+              status: "active" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
+              threadId: string;
+              turnId: string;
+            }
+          >;
+        }
+      ).runtimes.set("session-1", {
+        activityText: null,
+        assistantText: "Done",
+        lastEventAt: null,
+        model: "gpt-5.4",
+        planText: null,
+        sessionId: "session-1",
+        settling: false,
+        status: "active",
+        threadId: "thread-1",
+        turnId: "turn-1",
+      });
+
+      await (
+        bridge as unknown as {
+          onTurnCompleted: (params: Record<string, unknown>) => Promise<void>;
+        }
+      ).onTurnCompleted({
+        threadId: "thread-1",
+        turn: {
+          id: "turn-1",
+          status: "completed",
+        },
+      });
+
+      expect(pushRuntimeUpdate).toHaveBeenCalledTimes(1);
+      expect(requestQueueDrain).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_499);
+      expect(requestQueueDrain).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await flushBackgroundTasks(bridge);
+
+      expect(requestQueueDrain).toHaveBeenCalledWith("session-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("queues new prompts while the previous turn is still settling", async () => {
+    vi.useFakeTimers();
+    const { bridge, codex, registry, stateStore } = createBridge();
+    const pushRuntimeUpdate = vi.fn().mockResolvedValue(undefined);
+
+    try {
+      registry.findSessionByThreadId.mockReturnValue({ id: "session-1" });
+      registry.getSessionById.mockReturnValue({
+        id: "session-1",
+        workspaceId: "workspace-1",
+        status: "working",
+        claudeSessionId: "thread-1",
+        agentType: "codex",
+        model: "gpt-5.4",
+        title: "Fix freezing issue",
+      });
+      (
+        registry as unknown as {
+          resolveWorkspacePath: ReturnType<typeof vi.fn>;
+        }
+      ).resolveWorkspacePath = vi.fn().mockReturnValue("/tmp/workspaces/repo");
+      stateStore.listFollowingConversations.mockReturnValue([{ chatId: 12, messageThreadId: null }]);
+      (bridge as unknown as { pushRuntimeUpdate: typeof pushRuntimeUpdate }).pushRuntimeUpdate = pushRuntimeUpdate;
+      (
+        bridge as unknown as {
+          runtimes: Map<
+            string,
+            {
+              activityText: string | null;
+              assistantText: string;
+              lastEventAt: string | null;
+              model: string | null;
+              planText: string | null;
+              sessionId: string;
+              settling: boolean;
+              status: "active" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
+              threadId: string;
+              turnId: string;
+            }
+          >;
+        }
+      ).runtimes.set("session-1", {
+        activityText: null,
+        assistantText: "Done",
+        lastEventAt: null,
+        model: "gpt-5.4",
+        planText: null,
+        sessionId: "session-1",
+        settling: false,
+        status: "active",
+        threadId: "thread-1",
+        turnId: "turn-1",
+      });
+
+      await (
+        bridge as unknown as {
+          onTurnCompleted: (params: Record<string, unknown>) => Promise<void>;
+        }
+      ).onTurnCompleted({
+        threadId: "thread-1",
+        turn: {
+          id: "turn-1",
+          status: "completed",
+        },
+      });
+
+      const result = await (
+        bridge as unknown as {
+          submitPrompt: (
+            location: { chatId: number; messageThreadId: number | null },
+            session: {
+              id: string;
+              workspaceId: string;
+              claudeSessionId: string | null;
+              agentType: string | null;
+              model: string | null;
+              status: string;
+            },
+            text: string,
+            fromQueue: boolean,
+          ) => Promise<string>;
+        }
+      ).submitPrompt(
+        { chatId: 12, messageThreadId: null },
+        {
+          id: "session-1",
+          workspaceId: "workspace-1",
+          claudeSessionId: "thread-1",
+          agentType: "codex",
+          model: "gpt-5.4",
+          status: "working",
+        },
+        "open a PR",
+        false,
+      );
+
+      expect(result).toBe("queued");
+      expect(stateStore.enqueuePrompt).toHaveBeenCalledWith("session-1", "thread-1", "normal", "open a PR");
+      expect(codex.startTurn).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores late turn events after a newer turn has already started", async () => {
+    const { bridge, registry } = createBridge();
     const pushRuntimeUpdate = vi.fn().mockResolvedValue(undefined);
 
     registry.findSessionByThreadId.mockReturnValue({ id: "session-1" });
@@ -687,7 +885,6 @@ describe("TelegramConductorBridge", () => {
       model: "gpt-5.4",
       title: "Fix freezing issue",
     });
-    (bridge as unknown as { requestQueueDrain: typeof requestQueueDrain }).requestQueueDrain = requestQueueDrain;
     (bridge as unknown as { pushRuntimeUpdate: typeof pushRuntimeUpdate }).pushRuntimeUpdate = pushRuntimeUpdate;
     (
       bridge as unknown as {
@@ -700,6 +897,7 @@ describe("TelegramConductorBridge", () => {
             model: string | null;
             planText: string | null;
             sessionId: string;
+            settling: boolean;
             status: "active" | "waiting_user_input" | "waiting_plan" | "completed" | "failed";
             threadId: string;
             turnId: string;
@@ -707,31 +905,45 @@ describe("TelegramConductorBridge", () => {
         >;
       }
     ).runtimes.set("session-1", {
-      activityText: null,
-      assistantText: "Done",
+      activityText: "Composing reply...",
+      assistantText: "New turn",
       lastEventAt: null,
       model: "gpt-5.4",
       planText: null,
       sessionId: "session-1",
+      settling: false,
       status: "active",
       threadId: "thread-1",
-      turnId: "turn-1",
+      turnId: "turn-2",
     });
 
     await (
       bridge as unknown as {
-        onTurnCompleted: (params: Record<string, unknown>) => Promise<void>;
+        onAgentMessageDelta: (params: Record<string, unknown>) => Promise<void>;
       }
-    ).onTurnCompleted({
+    ).onAgentMessageDelta({
       threadId: "thread-1",
-      turn: {
-        id: "turn-1",
-        status: "completed",
-      },
+      turnId: "turn-1",
+      delta: " late",
     });
 
-    expect(pushRuntimeUpdate).toHaveBeenCalledTimes(1);
-    expect(requestQueueDrain).toHaveBeenCalledWith("session-1");
+    expect(pushRuntimeUpdate).not.toHaveBeenCalled();
+    expect(
+      (
+        bridge as unknown as {
+          runtimes: Map<
+            string,
+            {
+              assistantText: string;
+              turnId: string;
+            }
+          >;
+        }
+      ).runtimes.get("session-1"),
+    ).toMatchObject({
+      assistantText: "New turn",
+      turnId: "turn-2",
+    });
   });
 
   it("acknowledges callbacks before finishing slower follow-up work", async () => {
@@ -1032,6 +1244,293 @@ describe("TelegramConductorBridge", () => {
     ).upsertSessionPanel(location, "session-1", "Working...\nA short update plus a bit more", keyboard);
 
     expect(telegram.editMessageText).not.toHaveBeenCalled();
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("flushes the latest throttled session stream update after the debounce window", async () => {
+    vi.useFakeTimers();
+    const { bridge, telegram } = createBridge();
+
+    try {
+      const runtime: TestRuntime = {
+        activityText: null,
+        assistantText: "",
+        lastEventAt: null,
+        model: "gpt-5.4",
+        planText: null,
+        sessionId: "session-1",
+        settling: false,
+        status: "active" as const,
+        threadId: "thread-1",
+        turnId: "turn-1",
+      };
+      (
+        bridge as unknown as {
+          sessionStreams: Map<
+            string,
+            {
+              keyboardFingerprint: string | null;
+              lastSentAt: number;
+              lastText: string;
+              messageId: number | null;
+              sessionId: string | null;
+              turnId: string | null;
+            }
+          >;
+        }
+      ).sessionStreams.set("99:77", {
+        keyboardFingerprint: null,
+        lastSentAt: Date.now(),
+        lastText: "Working",
+        messageId: 321,
+        sessionId: "session-1",
+        turnId: "turn-1",
+      });
+
+      await (
+        bridge as unknown as {
+          upsertSessionStream: (
+            location: { chatId: number; messageThreadId: number | null },
+            runtime: TestRuntime,
+            text: string,
+          ) => Promise<void>;
+        }
+      ).upsertSessionStream({ chatId: 99, messageThreadId: 77 }, runtime, "Working a little more");
+
+      expect(telegram.editMessageText).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(649);
+      expect(telegram.editMessageText).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await flushBackgroundTasks(bridge);
+
+      expect(telegram.editMessageText).toHaveBeenCalledTimes(1);
+      expect(telegram.editMessageText.mock.calls[0]?.[2]).toBe("Working a little more");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushes the latest throttled session panel update after the debounce window", async () => {
+    vi.useFakeTimers();
+    const { bridge, telegram } = createBridge();
+
+    try {
+      const keyboard: TestKeyboard = [[{ text: "Refresh Status", callback_data: "panel:refresh" }]];
+      (
+        bridge as unknown as {
+          sessionPanels: Map<
+            string,
+            {
+              keyboardFingerprint: string;
+              lastText: string;
+              lastSentAt: number;
+              messageId: number | null;
+              sessionId: string | null;
+            }
+          >;
+        }
+      ).sessionPanels.set("99:0", {
+        keyboardFingerprint: JSON.stringify(keyboard),
+        lastText: "Working...\nShort",
+        lastSentAt: Date.now(),
+        messageId: 456,
+        sessionId: "session-1",
+      });
+
+      await (
+        bridge as unknown as {
+          upsertSessionPanel: (
+            location: { chatId: number; messageThreadId: number | null },
+            sessionId: string | null,
+            text: string,
+            keyboard: TestKeyboard,
+          ) => Promise<void>;
+        }
+      ).upsertSessionPanel({ chatId: 99, messageThreadId: null }, "session-1", "Working...\nShort but newer", keyboard);
+
+      expect(telegram.editMessageText).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(499);
+      expect(telegram.editMessageText).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      await flushBackgroundTasks(bridge);
+
+      expect(telegram.editMessageText).toHaveBeenCalledTimes(1);
+      expect(telegram.editMessageText.mock.calls[0]?.[2]).toBe("Working...\nShort but newer");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces queued session stream edits to the latest payload", async () => {
+    const { bridge, telegram } = createBridge();
+    const deferred = createDeferred();
+    let editCount = 0;
+
+    telegram.editMessageText.mockImplementation(async () => {
+      editCount += 1;
+      if (editCount === 1) {
+        await deferred.promise;
+      }
+    });
+
+    (
+      bridge as unknown as {
+        sessionStreams: Map<
+          string,
+          {
+            keyboardFingerprint: string | null;
+            lastSentAt: number;
+            lastText: string;
+            messageId: number | null;
+            sessionId: string | null;
+            turnId: string | null;
+          }
+        >;
+      }
+    ).sessionStreams.set("99:77", {
+      keyboardFingerprint: null,
+      lastSentAt: 0,
+      lastText: "Old text",
+      messageId: 321,
+      sessionId: "session-1",
+      turnId: "turn-1",
+    });
+
+    const runtime: TestRuntime = {
+      activityText: null,
+      assistantText: "",
+      lastEventAt: null,
+      model: "gpt-5.4",
+      planText: null,
+      sessionId: "session-1",
+      settling: false,
+      status: "active" as const,
+      threadId: "thread-1",
+      turnId: "turn-1",
+    };
+    const finalStreamText = "Final chunk ".repeat(20).trim();
+
+    const first = (
+      bridge as unknown as {
+        upsertSessionStream: (
+          location: { chatId: number; messageThreadId: number | null },
+          runtime: TestRuntime,
+          text: string,
+        ) => Promise<void>;
+      }
+    ).upsertSessionStream({ chatId: 99, messageThreadId: 77 }, runtime, "First chunk");
+    await Promise.resolve();
+    await Promise.resolve();
+    const second = (
+      bridge as unknown as {
+        upsertSessionStream: (
+          location: { chatId: number; messageThreadId: number | null },
+          runtime: TestRuntime,
+          text: string,
+        ) => Promise<void>;
+      }
+    ).upsertSessionStream({ chatId: 99, messageThreadId: 77 }, runtime, "Second chunk");
+    const third = (
+      bridge as unknown as {
+        upsertSessionStream: (
+          location: { chatId: number; messageThreadId: number | null },
+          runtime: TestRuntime,
+          text: string,
+        ) => Promise<void>;
+      }
+    ).upsertSessionStream({ chatId: 99, messageThreadId: 77 }, runtime, finalStreamText);
+
+    expect(telegram.editMessageText).toHaveBeenCalledTimes(1);
+    expect(telegram.editMessageText.mock.calls[0]?.[2]).toBe("First chunk");
+
+    deferred.resolve();
+    await Promise.all([first, second, third]);
+
+    expect(telegram.editMessageText).toHaveBeenCalledTimes(2);
+    expect(telegram.editMessageText.mock.calls[1]?.[2]).toBe(finalStreamText);
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("coalesces queued session panel edits to the latest payload", async () => {
+    const { bridge, telegram } = createBridge();
+    const deferred = createDeferred();
+    let editCount = 0;
+
+    telegram.editMessageText.mockImplementation(async () => {
+      editCount += 1;
+      if (editCount === 1) {
+        await deferred.promise;
+      }
+    });
+
+    const keyboard: TestKeyboard = [[{ text: "Refresh Status", callback_data: "panel:refresh" }]];
+    const finalPanelText = "Panel final ".repeat(20).trim();
+    (
+      bridge as unknown as {
+        sessionPanels: Map<
+          string,
+          {
+            keyboardFingerprint: string;
+            lastText: string;
+            lastSentAt: number;
+            messageId: number | null;
+            sessionId: string | null;
+          }
+        >;
+      }
+    ).sessionPanels.set("99:0", {
+      keyboardFingerprint: JSON.stringify(keyboard),
+      lastText: "Old panel text",
+      lastSentAt: 0,
+      messageId: 456,
+      sessionId: "session-1",
+    });
+
+    const first = (
+      bridge as unknown as {
+        upsertSessionPanel: (
+          location: { chatId: number; messageThreadId: number | null },
+          sessionId: string | null,
+          text: string,
+          keyboard: TestKeyboard,
+        ) => Promise<void>;
+      }
+    ).upsertSessionPanel({ chatId: 99, messageThreadId: null }, "session-1", "Panel one", keyboard);
+    await Promise.resolve();
+    await Promise.resolve();
+    const second = (
+      bridge as unknown as {
+        upsertSessionPanel: (
+          location: { chatId: number; messageThreadId: number | null },
+          sessionId: string | null,
+          text: string,
+          keyboard: TestKeyboard,
+        ) => Promise<void>;
+      }
+    ).upsertSessionPanel({ chatId: 99, messageThreadId: null }, "session-1", "Panel two", keyboard);
+    const third = (
+      bridge as unknown as {
+        upsertSessionPanel: (
+          location: { chatId: number; messageThreadId: number | null },
+          sessionId: string | null,
+          text: string,
+          keyboard: TestKeyboard,
+        ) => Promise<void>;
+      }
+    ).upsertSessionPanel({ chatId: 99, messageThreadId: null }, "session-1", finalPanelText, keyboard);
+
+    expect(telegram.editMessageText).toHaveBeenCalledTimes(1);
+    expect(telegram.editMessageText.mock.calls[0]?.[2]).toBe("Panel one");
+
+    deferred.resolve();
+    await Promise.all([first, second, third]);
+
+    expect(telegram.editMessageText).toHaveBeenCalledTimes(2);
+    expect(telegram.editMessageText.mock.calls[1]?.[2]).toBe(finalPanelText);
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
