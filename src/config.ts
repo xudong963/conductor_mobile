@@ -1,7 +1,8 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { z } from "zod";
+import { ZodError, z } from "zod";
+
+import { defaultBridgeDbPath, resolveConfigPath, resolveEnvFilePath } from "./paths.js";
 
 function loadEnvFile(filePath: string): void {
   if (!fs.existsSync(filePath)) {
@@ -31,19 +32,51 @@ function loadEnvFile(filePath: string): void {
   }
 }
 
-function expandHome(input: string): string {
-  if (!input.startsWith("~")) {
-    return input;
+export class BridgeConfigError extends Error {
+  readonly envFilePath: string;
+
+  constructor(message: string, envFilePath: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "BridgeConfigError";
+    this.envFilePath = envFilePath;
   }
-  return path.join(os.homedir(), input.slice(1));
 }
 
-loadEnvFile(path.resolve(process.cwd(), ".env"));
+function summarizeConfigIssues(error: ZodError): string {
+  const missingKeys = new Set<string>();
+  const invalidKeys = new Set<string>();
+
+  for (const issue of error.issues) {
+    const key = typeof issue.path[0] === "string" ? issue.path[0] : null;
+    if (!key) {
+      continue;
+    }
+    if (issue.code === "invalid_type" && issue.input === undefined) {
+      missingKeys.add(key);
+      continue;
+    }
+    invalidKeys.add(key);
+  }
+
+  const parts = [];
+  if (missingKeys.size > 0) {
+    parts.push(`missing ${Array.from(missingKeys).join(", ")}`);
+  }
+  if (invalidKeys.size > 0) {
+    parts.push(`invalid ${Array.from(invalidKeys).join(", ")}`);
+  }
+
+  return parts.length > 0 ? parts.join("; ") : "invalid configuration";
+}
+
+const envFilePath = resolveEnvFilePath();
+loadEnvFile(envFilePath);
+const configBaseDir = path.dirname(envFilePath);
 
 const schema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().min(10),
   TELEGRAM_ALLOWED_CHAT_IDS: z.string().optional(),
-  BRIDGE_DB_PATH: z.string().default(".context/bridge.db"),
+  BRIDGE_DB_PATH: z.string().default(defaultBridgeDbPath()),
   CONDUCTOR_DB_PATH: z.string().default("~/Library/Application Support/com.conductor.app/conductor.db"),
   CODEX_BIN: z.string().default("~/Library/Application Support/com.conductor.app/bin/codex"),
   CLAUDE_BIN: z.string().default("~/Library/Application Support/com.conductor.app/bin/claude"),
@@ -55,7 +88,19 @@ const schema = z.object({
   DEFAULT_PERMISSION_MODE: z.string().default("default"),
 });
 
-const parsed = schema.parse(process.env);
+let parsed: z.infer<typeof schema>;
+try {
+  parsed = schema.parse(process.env);
+} catch (error) {
+  if (error instanceof ZodError) {
+    throw new BridgeConfigError(
+      `Invalid bridge configuration (${summarizeConfigIssues(error)}). Run \`conductor-tg setup\` or fix ${envFilePath}.`,
+      envFilePath,
+      error,
+    );
+  }
+  throw error;
+}
 
 const allowedChatIds = parsed.TELEGRAM_ALLOWED_CHAT_IDS
   ? new Set(
@@ -70,14 +115,15 @@ const allowedChatIds = parsed.TELEGRAM_ALLOWED_CHAT_IDS
 export const config = {
   telegramToken: parsed.TELEGRAM_BOT_TOKEN,
   allowedChatIds,
-  bridgeDbPath: path.resolve(expandHome(parsed.BRIDGE_DB_PATH)),
-  conductorDbPath: path.resolve(expandHome(parsed.CONDUCTOR_DB_PATH)),
-  codexBin: path.resolve(expandHome(parsed.CODEX_BIN)),
-  claudeBin: path.resolve(expandHome(parsed.CLAUDE_BIN)),
-  workspacesRoot: path.resolve(expandHome(parsed.WORKSPACES_ROOT)),
+  bridgeDbPath: resolveConfigPath(parsed.BRIDGE_DB_PATH, configBaseDir),
+  conductorDbPath: resolveConfigPath(parsed.CONDUCTOR_DB_PATH, configBaseDir),
+  codexBin: resolveConfigPath(parsed.CODEX_BIN, configBaseDir),
+  claudeBin: resolveConfigPath(parsed.CLAUDE_BIN, configBaseDir),
+  workspacesRoot: resolveConfigPath(parsed.WORKSPACES_ROOT, configBaseDir),
   pollTimeoutSeconds: parsed.POLL_TIMEOUT_SECONDS,
   queueTickMs: parsed.QUEUE_TICK_MS,
   pageSize: parsed.PAGE_SIZE,
   defaultFallbackModel: parsed.DEFAULT_FALLBACK_MODEL,
   defaultPermissionMode: parsed.DEFAULT_PERMISSION_MODE,
+  envFilePath,
 };

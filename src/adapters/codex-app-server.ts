@@ -51,6 +51,7 @@ interface InterruptTurnOptions {
 
 const BRIDGE_ONLY_ENV_KEYS = [
   "BRIDGE_DB_PATH",
+  "BRIDGE_ENV_PATH",
   "CLAUDE_BIN",
   "CODEX_BIN",
   "CONDUCTOR_DB_PATH",

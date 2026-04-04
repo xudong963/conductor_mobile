@@ -16,7 +16,56 @@ This bridge is local-first: it must run on the same Mac that already has Conduct
 - Queue follow-up prompts and interrupt active turns
 - Inspect status and recent context without leaving Telegram
 
-## Quick Start
+## Install Without Cloning the Repo
+
+Install the published CLI package:
+
+```bash
+npm install -g conductor-tg
+```
+
+Create the default config file:
+
+```bash
+conductor-tg setup
+```
+
+The setup command writes the config to:
+
+```text
+~/Library/Application Support/conductor-tg/.env
+```
+
+It asks for at least these two values:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_ALLOWED_CHAT_IDS`
+
+Set `TELEGRAM_ALLOWED_CHAT_IDS` to the Telegram chat IDs that may use the bridge. Separate multiple IDs with commas.
+
+If you prefer manual editing instead of the interactive setup flow, run:
+
+```bash
+conductor-tg init
+```
+
+That command only creates the template file. After that, open `~/Library/Application Support/conductor-tg/.env` and fill in the required values yourself.
+
+Then start the bridge:
+
+```bash
+conductor-tg
+```
+
+The packaged install stores its local state DB at:
+
+```text
+~/Library/Application Support/conductor-tg/bridge.db
+```
+
+If you want to keep the config somewhere else, set `BRIDGE_ENV_PATH` before launching the bridge.
+
+## Quick Start From Source
 
 The fastest path is a private chat with the bot. Start there first. Add a forum-enabled supergroup later if you want one Telegram topic per Conductor chat.
 
@@ -147,10 +196,16 @@ The current version creates `.context/` on startup, so you do not need to create
 Run the bridge on the same Mac where Conductor is installed:
 
 ```bash
+conductor-tg
+```
+
+If you are working from a source checkout instead of the published package:
+
+```bash
 npm start
 ```
 
-Development mode:
+Development mode from source:
 
 ```bash
 npm run dev
@@ -218,7 +273,9 @@ If you want the bridge to stay available after login, use a user `LaunchAgent` v
 
 Amphetamine can help prevent the Mac from sleeping while the bridge is running, but use a user `LaunchAgent` via `launchd` if you want the bridge to start automatically after login.
 
-If you set this up, make sure the process starts from the repo root so it can find `.env` and `.context/`.
+If you install the published CLI package, point `launchd` at the `conductor-tg` executable. It reads config from `~/Library/Application Support/conductor-tg/.env` by default, so it does not need to start from a repo checkout.
+
+If you run from a source checkout instead, start the process from the repo root so it can find `.env` and `.context/`.
 
 If your Node.js installation only exists in an interactive shell setup such as `nvm`, `launchd` may not see it.
 

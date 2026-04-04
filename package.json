@@ -1,17 +1,23 @@
 {
-  "name": "telegram-conductor-bridge",
+  "name": "conductor-tg",
   "version": "1.0.0",
   "description": "Telegram bridge for controlling a local Conductor installation on the same Mac.",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/index.js",
+  "bin": {
+    "conductor-tg": "./dist/cli.js"
+  },
   "files": [
-    "dist"
+    "dist",
+    ".env.example"
   ],
   "scripts": {
     "test": "vitest run",
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
-    "dev": "tsx watch src/index.ts",
-    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/cli.ts start",
+    "start": "tsx src/cli.ts start",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src/",
