@@ -1,6 +1,11 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
-import { buildEnvText, isValidAllowedChatIds, isValidTelegramToken, parseEnvText } from "./cli.js";
+import { buildEnvText, isDirectExecution, isValidAllowedChatIds, isValidTelegramToken, parseEnvText } from "./cli.js";
 
 describe("cli env helpers", () => {
   it("parses env text while ignoring comments and blank lines", () => {
@@ -44,5 +49,22 @@ TELEGRAM_ALLOWED_CHAT_IDS=123,456
     expect(isValidAllowedChatIds("-100123,456789")).toBe(true);
     expect(isValidAllowedChatIds("abc,123")).toBe(false);
     expect(isValidAllowedChatIds("")).toBe(false);
+  });
+
+  it("treats a symlinked bin path as direct execution", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "conductor-tg-cli-test-"));
+    const targetPath = path.join(tempDir, "dist", "cli.js");
+    const linkPath = path.join(tempDir, "bin", "conductor-tg");
+
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.mkdirSync(path.dirname(linkPath), { recursive: true });
+    fs.writeFileSync(targetPath, "#!/usr/bin/env node\n", "utf8");
+    fs.symlinkSync(targetPath, linkPath);
+
+    try {
+      expect(isDirectExecution(linkPath, pathToFileURL(targetPath).href)).toBe(true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

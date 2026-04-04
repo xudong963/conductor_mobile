@@ -1,13 +1,13 @@
 {
   "name": "conductor-tg",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Telegram bridge for controlling a local Conductor installation on the same Mac.",
   "publishConfig": {
     "access": "public"
   },
   "main": "./dist/index.js",
   "bin": {
-    "conductor-tg": "./dist/cli.js"
+    "conductor-tg": "dist/cli.js"
   },
   "files": [
     "dist",

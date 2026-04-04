@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { resolveEnvFilePath } from "./paths.js";
 
@@ -90,6 +90,22 @@ export function isValidAllowedChatIds(value: string): boolean {
     .filter(Boolean);
 
   return parts.length > 0 && parts.every((item) => Number.isFinite(Number.parseInt(item, 10)));
+}
+
+export function isDirectExecution(
+  argv1 = process.argv[1],
+  moduleUrl = import.meta.url,
+  realpathSync: (filePath: string) => string = fs.realpathSync,
+): boolean {
+  if (!argv1) {
+    return false;
+  }
+
+  try {
+    return realpathSync(argv1) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return moduleUrl === pathToFileURL(argv1).href;
+  }
 }
 
 function printUsage(): void {
@@ -269,7 +285,7 @@ export async function main(argv: string[]): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectExecution()) {
   void main(process.argv.slice(2)).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
