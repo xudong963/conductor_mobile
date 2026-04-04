@@ -4,6 +4,8 @@ export type QueueKind = "normal" | "new_session";
 
 export type SessionStatus = "idle" | "working" | "needs_user_input" | "needs_plan_response" | "error" | "cancelling";
 
+export type SupportedAgentType = "codex" | "claude";
+
 export interface RepositoryRef {
   id: string;
   repositoryName: string;
@@ -102,9 +104,11 @@ export interface SessionSeed {
   model: string;
   permissionMode: string;
   title: string;
+  agentType?: SupportedAgentType;
 }
 
 export interface SessionDefaults {
+  agentType: SupportedAgentType;
   model: string;
   permissionMode: string;
 }

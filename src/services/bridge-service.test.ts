@@ -166,6 +166,7 @@ class FakeRegistryAdapter {
 
   getSessionDefaults(): SessionDefaults {
     return {
+      agentType: "codex",
       model: "gpt-5.4",
       permissionMode: "default",
     };
