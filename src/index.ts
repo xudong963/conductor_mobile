@@ -2,6 +2,7 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 
 import { ConductorMirrorWriter } from "./adapters/conductor-mirror.js";
+import { ClaudeCodeAdapter } from "./adapters/claude-code.js";
 import { CodexAppServerAdapter } from "./adapters/codex-app-server.js";
 import { ConductorRegistryAdapter } from "./adapters/conductor-registry.js";
 import { BridgeStateStore } from "./bridge/state-store.js";
@@ -24,6 +25,7 @@ import {
 import type {
   CodexNotification,
   ConductorSessionRef,
+  SupportedAgentType,
   TelegramBotCommand,
   TelegramCallbackQuery,
   TelegramConversationTarget,
@@ -117,6 +119,7 @@ interface CodexServerRequest {
 type PromptSubmitResult = "submitted" | "queued" | "retryable_failure" | "permanent_failure";
 
 interface BridgeDependencies {
+  claude?: ClaudeCodeAdapter;
   codex?: CodexAppServerAdapter;
   mirror?: ConductorMirrorWriter;
   registry?: ConductorRegistryAdapter;
@@ -294,6 +297,7 @@ function buildHelpText(): string {
 }
 
 export class TelegramConductorBridge {
+  private readonly claude: ClaudeCodeAdapter;
   private readonly codex: CodexAppServerAdapter;
   private readonly mirror: ConductorMirrorWriter;
   private readonly registry: ConductorRegistryAdapter;
@@ -314,6 +318,7 @@ export class TelegramConductorBridge {
   private stopped = false;
 
   constructor(deps: BridgeDependencies = {}) {
+    this.claude = deps.claude ?? new ClaudeCodeAdapter(config.claudeBin);
     this.codex = deps.codex ?? new CodexAppServerAdapter(config.codexBin);
     this.registry =
       deps.registry ??
@@ -327,11 +332,38 @@ export class TelegramConductorBridge {
     this.mirror = deps.mirror ?? new ConductorMirrorWriter(this.registry, this.stateStore);
   }
 
+  private resolveSupportedAgentType(agentType: string | null | undefined): SupportedAgentType | null {
+    if (!agentType || agentType === "codex") {
+      return "codex";
+    }
+    if (agentType === "claude") {
+      return "claude";
+    }
+    return null;
+  }
+
+  private getAdapterForAgent(agentType: string | null | undefined): ClaudeCodeAdapter | CodexAppServerAdapter | null {
+    const supported = this.resolveSupportedAgentType(agentType);
+    if (supported === "claude") {
+      return this.claude;
+    }
+    if (supported === "codex") {
+      return this.codex;
+    }
+    return null;
+  }
+
   async start(): Promise<void> {
     this.stateStore.init();
+    await this.claude.start();
     await this.codex.start();
     await this.syncTelegramCommands();
 
+    this.claude.on("notification", (notification: CodexNotification) => {
+      void this.handleCodexNotification(notification).catch((error) => {
+        logger.error("failed to handle claude notification", error);
+      });
+    });
     this.codex.on("notification", (notification: CodexNotification) => {
       void this.handleCodexNotification(notification).catch((error) => {
         logger.error("failed to handle codex notification", error);
@@ -375,6 +407,7 @@ export class TelegramConductorBridge {
     if (this.backgroundTasks.size > 0) {
       await Promise.allSettled(this.backgroundTasks);
     }
+    await this.claude.stop();
     await this.codex.stop();
   }
 
@@ -1280,8 +1313,9 @@ export class TelegramConductorBridge {
       suppressSentConfirmation?: boolean;
     },
   ): Promise<PromptSubmitResult> {
-    if (session.agentType && session.agentType !== "codex") {
-      await this.safeSendMessage(location, "Only Codex sessions are supported right now.");
+    const adapter = this.getAdapterForAgent(session.agentType);
+    if (!adapter) {
+      await this.safeSendMessage(location, "Only Codex and Claude Code sessions are supported right now.");
       return "permanent_failure";
     }
     if (!session.claudeSessionId) {
@@ -1301,13 +1335,13 @@ export class TelegramConductorBridge {
     const workspacePath = this.registry.resolveWorkspacePath(session.workspaceId);
     let turnId: string;
     try {
-      await this.codex.resumeThread({
+      await adapter.resumeThread({
         threadId: session.claudeSessionId,
         cwd: workspacePath,
         model: session.model,
         ...(options?.allowMissingRollout ? { allowMissingRollout: true } : {}),
       });
-      ({ turnId } = await this.codex.startTurn({
+      ({ turnId } = await adapter.startTurn({
         threadId: session.claudeSessionId,
         cwd: workspacePath,
         model: session.model,
@@ -1398,12 +1432,18 @@ export class TelegramConductorBridge {
 
     let threadId: string | null = null;
     try {
-      threadId = await this.codex.startThread({
+      const adapter = this.getAdapterForAgent(defaults.agentType);
+      if (!adapter) {
+        throw new Error(`Unsupported agent type: ${defaults.agentType}`);
+      }
+
+      threadId = await adapter.startThread({
         cwd: workspacePath,
         model: defaults.model,
       });
 
       const session = this.registry.createSession(workspaceId, threadId, {
+        agentType: defaults.agentType,
         model: defaults.model,
         permissionMode: defaults.permissionMode,
         title,
@@ -1438,7 +1478,8 @@ export class TelegramConductorBridge {
       });
     } catch (error) {
       if (threadId) {
-        await this.codex.archiveThread(threadId).catch(() => undefined);
+        const adapter = this.getAdapterForAgent(defaults.agentType);
+        await adapter?.archiveThread(threadId).catch(() => undefined);
       }
       logger.error("failed to create new session", error);
       await this.safeSendMessage(location, "Failed to create a new chat.");
@@ -1556,7 +1597,15 @@ export class TelegramConductorBridge {
       return;
     }
 
-    await this.codex.steerTurn({
+    const session = this.registry.getSessionById(context.composeTargetSessionId);
+    const adapter = this.getAdapterForAgent(session?.agentType);
+    if (!session || !adapter || !("steerTurn" in adapter) || adapter === this.claude) {
+      this.stateStore.clearConversationComposeMode(location);
+      await this.safeSendMessage(location, "Plan feedback is only supported for Codex chats right now.");
+      return;
+    }
+
+    await adapter.steerTurn({
       threadId: context.composeTargetThreadId,
       expectedTurnId: context.composeTargetTurnId,
       input: text,
@@ -1575,6 +1624,10 @@ export class TelegramConductorBridge {
     const runtime = session ? this.runtimes.get(session.id) : null;
     if (!session || !runtime) {
       await this.safeSendMessage(location, "There is no plan to revise right now.");
+      return;
+    }
+    if (this.resolveSupportedAgentType(session.agentType) === "claude") {
+      await this.safeSendMessage(location, "Plan feedback is only supported for Codex chats right now.");
       return;
     }
 
@@ -1607,6 +1660,11 @@ export class TelegramConductorBridge {
       return;
     }
 
+    if (this.resolveSupportedAgentType(session.agentType) === "claude") {
+      await this.safeSendMessage(location, "Plan approval is only supported for Codex chats right now.");
+      return;
+    }
+
     await this.codex.steerTurn({
       threadId: runtime.threadId,
       expectedTurnId: runtime.turnId,
@@ -1623,6 +1681,10 @@ export class TelegramConductorBridge {
     const pendingRequest = session ? this.pendingInputRequests.get(session.id) : null;
     if (!session || !runtime || !pendingRequest) {
       await this.safeSendMessage(location, "There is no pending question right now.");
+      return;
+    }
+    if (this.resolveSupportedAgentType(session.agentType) === "claude") {
+      await this.safeSendMessage(location, "Reply requests are only supported for Codex chats right now.");
       return;
     }
 
@@ -1671,7 +1733,16 @@ export class TelegramConductorBridge {
       return text;
     }
 
-    await this.codex.interruptTurn({
+    const adapter = this.getAdapterForAgent(session.agentType);
+    if (!adapter) {
+      const text = "This chat type cannot be interrupted from the bridge right now.";
+      if (!options?.suppressMessage) {
+        await this.safeSendMessage(location, text);
+      }
+      return text;
+    }
+
+    await adapter.interruptTurn({
       threadId: runtime.threadId,
       turnId: runtime.turnId,
     });
@@ -2059,6 +2130,9 @@ export class TelegramConductorBridge {
         text,
         sentAt: new Date().toISOString(),
         model: session?.model ?? null,
+        ...(this.resolveSupportedAgentType(session?.agentType)
+          ? { agentType: this.resolveSupportedAgentType(session?.agentType)! }
+          : {}),
       });
       await this.pushRuntimeUpdate(runtime);
       return;

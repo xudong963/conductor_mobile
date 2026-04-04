@@ -2,7 +2,7 @@
 
 Control the local Conductor instance from Telegram.
 
-This bridge must run on the same Mac that already has Conductor installed and initialized. It reads the local Conductor database and launches the local Codex binary from that machine; it is not a remote bridge for controlling another computer's Conductor instance.
+This bridge must run on the same Mac that already has Conductor installed and initialized. It reads the local Conductor database and launches the local Codex and Claude Code binaries from that machine; it is not a remote bridge for controlling another computer's Conductor instance.
 
 ## Conductor <-> Telegram Mapping
 
@@ -20,6 +20,7 @@ The current version supports:
 - Browsing and switching branches with workspace descriptions
 - Browsing and switching chats
 - Continuing existing Codex sessions
+- Continuing existing Claude Code sessions
 - Creating a new Conductor chat on the current branch
 - Automatically creating a Telegram topic for a new Conductor chat when the current conversation supports topics
 - Basic queueing
@@ -37,6 +38,8 @@ The current version supports:
   `~/Library/Application Support/com.conductor.app/conductor.db`
 - The local Codex binary exists at:
   `~/Library/Application Support/com.conductor.app/bin/codex`
+- The local Claude Code binary exists at:
+  `~/Library/Application Support/com.conductor.app/bin/claude`
 - A Telegram Bot token is available
 - If you want to use the bridge in a forum-enabled Telegram supergroup, the bot should be added as an administrator so it can create topics and manage its status/context messages. In private chats, administrator permissions are not required.
 
@@ -139,6 +142,7 @@ Create a new workspace:
 ## Notes
 
 - The current version supports a single user across the allowed Telegram chats
-- The current version only supports Codex sessions
+- New chats inherit the active workspace's preferred agent. Existing Claude workspaces continue as Claude; otherwise new chats default to Codex.
+- Claude chats support queueing, streaming output, and interrupt. Codex-only bridge features such as plan approval and request-user-input replies still require Codex sessions.
 - The process will not start if `TELEGRAM_BOT_TOKEN` is not set
 - If the token is invalid, the bridge starts but Telegram long polling will keep returning `401`

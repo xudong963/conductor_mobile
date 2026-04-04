@@ -6,6 +6,7 @@ vi.mock("./config.js", () => ({
     allowedChatIds: null,
     bridgeDbPath: "/tmp/bridge.db",
     conductorDbPath: "/tmp/conductor.db",
+    claudeBin: "/tmp/claude",
     codexBin: "/tmp/codex",
     workspacesRoot: "/tmp/workspaces",
     pollTimeoutSeconds: 30,
@@ -58,9 +59,19 @@ async function flushBackgroundTasks(bridge: TelegramConductorBridge): Promise<vo
 }
 
 function createBridge() {
+  const claude = {
+    interruptTurn: vi.fn().mockResolvedValue(undefined),
+    resumeThread: vi.fn().mockResolvedValue(undefined),
+    startTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
+    startThread: vi.fn().mockResolvedValue("claude-thread-1"),
+    archiveThread: vi.fn().mockResolvedValue(undefined),
+  };
   const codex = {
+    archiveThread: vi.fn().mockResolvedValue(undefined),
+    interruptTurn: vi.fn().mockResolvedValue(undefined),
     resumeThread: vi.fn().mockResolvedValue(undefined),
     respondError: vi.fn().mockResolvedValue(undefined),
+    startThread: vi.fn().mockResolvedValue("thread-1"),
     startTurn: vi.fn().mockResolvedValue({ turnId: "turn-1" }),
   };
   const mirror = {
@@ -103,6 +114,7 @@ function createBridge() {
   };
 
   const bridge = new TelegramConductorBridge({
+    claude: claude as never,
     codex: codex as never,
     mirror: mirror as never,
     registry: registry as never,
@@ -112,6 +124,7 @@ function createBridge() {
 
   return {
     bridge,
+    claude,
     codex,
     mirror,
     registry,
@@ -366,6 +379,61 @@ describe("TelegramConductorBridge", () => {
     );
     expect(pushRuntimeUpdate).toHaveBeenCalledTimes(1);
     expect(safeSendMessage).not.toHaveBeenCalledWith({ chatId: 12, messageThreadId: null }, "Sent.");
+  });
+
+  it("routes Claude sessions through the Claude adapter", async () => {
+    const { bridge, claude, codex, mirror, registry, stateStore } = createBridge();
+    const pushRuntimeUpdate = vi.fn().mockResolvedValue(undefined);
+
+    (
+      registry as unknown as {
+        resolveWorkspacePath: ReturnType<typeof vi.fn>;
+      }
+    ).resolveWorkspacePath = vi.fn().mockReturnValue("/tmp/workspaces/repo");
+    stateStore.listFollowingConversations.mockReturnValue([{ chatId: 12, messageThreadId: null }]);
+    (bridge as unknown as { pushRuntimeUpdate: typeof pushRuntimeUpdate }).pushRuntimeUpdate = pushRuntimeUpdate;
+
+    const result = await (
+      bridge as unknown as {
+        submitPrompt: (
+          location: { chatId: number; messageThreadId: number | null },
+          session: {
+            id: string;
+            workspaceId: string;
+            claudeSessionId: string | null;
+            agentType: string | null;
+            model: string | null;
+          },
+          text: string,
+          fromQueue: boolean,
+        ) => Promise<string>;
+      }
+    ).submitPrompt(
+      { chatId: 12, messageThreadId: null },
+      {
+        id: "session-claude",
+        workspaceId: "workspace-1",
+        claudeSessionId: "claude-session-1",
+        agentType: "claude",
+        model: "opus-1m",
+      },
+      "ship it",
+      false,
+    );
+
+    expect(result).toBe("submitted");
+    expect(claude.resumeThread).toHaveBeenCalled();
+    expect(claude.startTurn).toHaveBeenCalled();
+    expect(codex.resumeThread).not.toHaveBeenCalled();
+    expect(codex.startTurn).not.toHaveBeenCalled();
+    expect(mirror.appendUserMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "session-claude",
+        turnId: "turn-1",
+        text: "ship it",
+      }),
+    );
+    expect(pushRuntimeUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("includes the active execution detail in the runtime body", () => {

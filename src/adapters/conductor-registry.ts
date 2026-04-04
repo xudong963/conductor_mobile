@@ -11,6 +11,7 @@ import type {
   SessionMessageRecord,
   SessionSeed,
   SessionStatus,
+  SupportedAgentType,
   WorkspaceRef,
 } from "../types.js";
 import { branchLookupCandidates, matchesRemoteBranchName } from "../utils/branch-name.js";
@@ -468,9 +469,39 @@ export class ConductorRegistryAdapter {
       defaultPlanMode === "true" || defaultPlanMode === "1" ? "plan" : this.defaultPermissionMode;
 
     return {
+      agentType: this.getPreferredAgentTypeForWorkspace(workspaceId),
       model: active?.model ?? defaultModel ?? this.defaultFallbackModel,
       permissionMode: active?.permissionMode ?? permissionFromSetting,
     };
+  }
+
+  getPreferredAgentTypeForWorkspace(workspaceId: string): SupportedAgentType {
+    const active = this.db
+      .prepare(
+        `
+          SELECT s.agent_type as agentType
+          FROM workspaces w
+          LEFT JOIN sessions s
+            ON s.id = w.active_session_id
+          WHERE w.id = ?
+          LIMIT 1
+        `,
+      )
+      .get(workspaceId) as { agentType: string | null } | undefined;
+    const latest = this.db
+      .prepare(
+        `
+          SELECT agent_type as agentType
+          FROM sessions
+          WHERE workspace_id = ?
+            AND IFNULL(is_hidden, 0) = 0
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `,
+      )
+      .get(workspaceId) as { agentType: string | null } | undefined;
+
+    return active?.agentType === "claude" || latest?.agentType === "claude" ? "claude" : "codex";
   }
 
   resolveWorkspacePath(workspaceId: string): string {
@@ -558,10 +589,10 @@ export class ConductorRegistryAdapter {
               created_at,
               updated_at
             )
-            VALUES (?, 'idle', ?, ?, 'codex', ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))
+            VALUES (?, 'idle', ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))
           `,
         )
-        .run(sessionId, threadId, workspaceId, seed.model, seed.permissionMode, seed.title);
+        .run(sessionId, threadId, workspaceId, seed.agentType ?? "codex", seed.model, seed.permissionMode, seed.title);
 
       this.db
         .prepare(
