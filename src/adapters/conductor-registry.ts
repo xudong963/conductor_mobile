@@ -475,6 +475,82 @@ export class ConductorRegistryAdapter {
     };
   }
 
+  listModelOptionsForNewSession(workspaceId: string, limit = 6): string[] {
+    const defaults = this.getSessionDefaults(workspaceId);
+    const rows = this.db
+      .prepare(
+        `
+          SELECT model, MAX(updated_at) as lastUpdatedAt
+          FROM sessions
+          WHERE agent_type = ?
+            AND model IS NOT NULL
+            AND TRIM(model) != ''
+            AND IFNULL(is_hidden, 0) = 0
+          GROUP BY model
+          ORDER BY lastUpdatedAt DESC
+          LIMIT ?
+        `,
+      )
+      .all(defaults.agentType, limit) as Array<{ model: string | null }>;
+
+    return Array.from(
+      new Set([
+        defaults.model,
+        ...rows
+          .map((row) => row.model?.trim() ?? "")
+          .filter((model): model is string => model.length > 0),
+      ]),
+    );
+  }
+
+  getCodexReasoningEffortForNewSession(workspaceId: string): string | null {
+    if (this.getPreferredAgentTypeForWorkspace(workspaceId) !== "codex") {
+      return null;
+    }
+
+    const active = this.db
+      .prepare(
+        `
+          SELECT
+            s.codex_thinking_level as codexThinkingLevel,
+            s.thinking_enabled as thinkingEnabled
+          FROM workspaces w
+          LEFT JOIN sessions s
+            ON s.id = w.active_session_id
+          WHERE w.id = ?
+          LIMIT 1
+        `,
+      )
+      .get(workspaceId) as { codexThinkingLevel: string | null; thinkingEnabled: number | null } | undefined;
+
+    const settingsRows = this.db
+      .prepare(
+        `
+          SELECT key, value
+          FROM settings
+          WHERE key IN ('default_codex_thinking_level', 'default_thinking_enabled')
+        `,
+      )
+      .all() as Array<{ key: string; value: string }>;
+
+    const settings = new Map(settingsRows.map((row) => [row.key, row.value]));
+    if (active?.thinkingEnabled === 0) {
+      return "none";
+    }
+
+    const activeEffort = active?.codexThinkingLevel?.trim();
+    if (activeEffort) {
+      return activeEffort;
+    }
+
+    const defaultThinkingEnabled = settings.get("default_thinking_enabled");
+    if (defaultThinkingEnabled === "false" || defaultThinkingEnabled === "0") {
+      return "none";
+    }
+
+    return settings.get("default_codex_thinking_level")?.trim() || "xhigh";
+  }
+
   getPreferredAgentTypeForWorkspace(workspaceId: string): SupportedAgentType {
     const active = this.db
       .prepare(
