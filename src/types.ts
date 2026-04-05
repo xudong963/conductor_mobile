@@ -55,6 +55,8 @@ export interface ChatContext {
   activeSessionId: string | null;
   composeMode: ComposeMode;
   composeWorkspaceId: string | null;
+  composeModel?: string | null;
+  composeReasoningEffort?: string | null;
   followSessionId: string | null;
   composeTargetSessionId: string | null;
   composeTargetThreadId: string | null;
@@ -72,6 +74,8 @@ export interface TelegramConversationContext extends TelegramConversationTarget 
   activeSessionId: string | null;
   composeMode: ComposeMode;
   composeWorkspaceId: string | null;
+  composeModel?: string | null;
+  composeReasoningEffort?: string | null;
   followSessionId: string | null;
   composeTargetSessionId: string | null;
   composeTargetThreadId: string | null;

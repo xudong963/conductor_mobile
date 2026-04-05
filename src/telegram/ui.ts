@@ -113,6 +113,50 @@ export function inboxKeyboard(sessions: ConductorSessionRef[]): TelegramInlineKe
   return rows;
 }
 
+function formatReasoningEffortButton(effort: string): string {
+  switch (effort) {
+    case "none":
+      return "Off";
+    case "minimal":
+      return "Min";
+    case "medium":
+      return "Med";
+    case "xhigh":
+      return "XHigh";
+    default:
+      return effort[0]?.toUpperCase() + effort.slice(1);
+  }
+}
+
+export function newSessionModelKeyboard(
+  models: string[],
+  selectedModel: string,
+  efforts?: string[],
+  selectedEffort?: string | null,
+): TelegramInlineKeyboard {
+  const rows: TelegramInlineKeyboard = [];
+  for (let index = 0; index < models.length; index += 2) {
+    rows.push(
+      models.slice(index, index + 2).map((model) => ({
+        text: `${model === selectedModel ? "[x]" : "[ ]"} ${model}`,
+        callback_data: `new-model:${encodeURIComponent(model)}`,
+      })),
+    );
+  }
+  if (efforts && efforts.length > 0) {
+    for (let index = 0; index < efforts.length; index += 3) {
+      rows.push(
+        efforts.slice(index, index + 3).map((effort) => ({
+          text: `${effort === selectedEffort ? "[x]" : "[ ]"} ${formatReasoningEffortButton(effort)}`,
+          callback_data: `new-effort:${encodeURIComponent(effort)}`,
+        })),
+      );
+    }
+  }
+  rows.push([{ text: "Cancel", callback_data: "new:cancel" }]);
+  return rows;
+}
+
 export function planKeyboard(): TelegramInlineKeyboard {
   return [
     [

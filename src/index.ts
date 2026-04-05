@@ -17,6 +17,7 @@ import {
   branchesKeyboard,
   homeKeyboard,
   inboxKeyboard,
+  newSessionModelKeyboard,
   planKeyboard,
   repositoriesKeyboard,
   replyKeyboard,
@@ -284,6 +285,8 @@ const STREAM_EAGER_EDIT_CHARS = 220;
 const PANEL_EDIT_INTERVAL_MS = 500;
 const PANEL_EAGER_EDIT_CHARS = 180;
 const TURN_COMPLETION_SETTLE_MS = 1500;
+const NEW_SESSION_MODEL_LIMIT = 6;
+const NEW_SESSION_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"] as const;
 const TOPIC_LOCKED_CALLBACK_TEXT = "This topic is locked to its current chat. Use the main chat.";
 const TOPIC_LOCKED_MESSAGE =
   "This topic is locked to its current chat. Use the main chat to switch repos, branches, open inbox, or select or create another chat.";
@@ -310,6 +313,29 @@ function buildHelpText(): string {
     "Short status questions like 'status' or '目前什么状态' refresh the status panel.",
     "In forum-enabled supergroups, each chat streams in its dedicated topic.",
   ].join("\n");
+}
+
+function isReasoningEffort(value: string): value is (typeof NEW_SESSION_REASONING_EFFORTS)[number] {
+  return NEW_SESSION_REASONING_EFFORTS.includes(value as (typeof NEW_SESSION_REASONING_EFFORTS)[number]);
+}
+
+function formatReasoningEffort(effort: string): string {
+  switch (effort) {
+    case "none":
+      return "Off";
+    case "minimal":
+      return "Minimal";
+    case "low":
+      return "Low";
+    case "medium":
+      return "Medium";
+    case "high":
+      return "High";
+    case "xhigh":
+      return "Extra High";
+    default:
+      return effort;
+  }
 }
 
 export class TelegramConductorBridge {
@@ -640,15 +666,7 @@ export class TelegramConductorBridge {
     if (data === "home:new") {
       await this.telegram.answerCallbackQuery(callback.id);
       this.enqueueConversationTask(location, async () => {
-        const context = this.stateStore.getConversationContext(location);
-        if (!context.activeWorkspaceId) {
-          await this.showRepositories(location, "Select a repo and branch before creating a new chat.");
-          return;
-        }
-        this.stateStore.setConversationComposeMode(location, "new_session", {
-          composeWorkspaceId: context.activeWorkspaceId,
-        });
-        await this.safeSendMessage(location, "Your next message will create a new chat on the current branch.");
+        await this.prepareNewSession(location);
       });
       return;
     }
@@ -668,6 +686,34 @@ export class TelegramConductorBridge {
         if (text !== "Interrupt requested.") {
           await this.safeSendMessage(location, text);
         }
+      });
+      return;
+    }
+
+    if (data === "new:cancel") {
+      await this.telegram.answerCallbackQuery(callback.id);
+      this.enqueueConversationTask(location, async () => {
+        this.stateStore.clearConversationComposeMode(location);
+        await this.showHome(location, "Cancelled new chat.");
+      });
+      return;
+    }
+
+    if (data.startsWith("new-model:")) {
+      this.enqueueConversationTask(location, async () => {
+        await this.selectNewSessionModel(location, callback.id, message.message_id, data.slice("new-model:".length));
+      });
+      return;
+    }
+
+    if (data.startsWith("new-effort:")) {
+      this.enqueueConversationTask(location, async () => {
+        await this.selectNewSessionReasoningEffort(
+          location,
+          callback.id,
+          message.message_id,
+          data.slice("new-effort:".length),
+        );
       });
       return;
     }
@@ -797,15 +843,7 @@ export class TelegramConductorBridge {
         await this.showContext(location, rawCommand);
         return;
       case "/new": {
-        const context = this.stateStore.getConversationContext(location);
-        if (!context.activeWorkspaceId) {
-          await this.showRepositories(location, "Select a repo and branch before creating a new chat.");
-          return;
-        }
-        this.stateStore.setConversationComposeMode(location, "new_session", {
-          composeWorkspaceId: context.activeWorkspaceId,
-        });
-        await this.safeSendMessage(location, "Your next message will create a new chat on the current branch.");
+        await this.prepareNewSession(location);
         return;
       }
       case "/new_workspace":
@@ -1013,6 +1051,8 @@ export class TelegramConductorBridge {
       activeSessionId: session.id,
       composeMode: "none",
       composeWorkspaceId: null,
+      composeModel: null,
+      composeReasoningEffort: null,
       followSessionId: options?.follow === false ? null : session.id,
       composeTargetSessionId: null,
       composeTargetThreadId: null,
@@ -1231,6 +1271,187 @@ export class TelegramConductorBridge {
     await this.renderSessionPanel(location);
   }
 
+  private async prepareNewSession(location: TelegramConversationTarget): Promise<void> {
+    const context = this.stateStore.getConversationContext(location);
+    const workspaceId = context.activeWorkspaceId;
+    if (!workspaceId) {
+      await this.showRepositories(location, "Select a repo and branch before creating a new chat.");
+      return;
+    }
+
+    const defaults = this.registry.getSessionDefaults(workspaceId);
+    const reasoningEffort = this.registry.getCodexReasoningEffortForNewSession(workspaceId);
+    this.stateStore.setConversationComposeMode(location, "new_session", {
+      composeWorkspaceId: workspaceId,
+      composeModel: defaults.model,
+      composeReasoningEffort: reasoningEffort,
+    });
+    await this.renderNewSessionComposer(location, workspaceId, defaults.model, reasoningEffort);
+  }
+
+  private async selectNewSessionModel(
+    location: TelegramConversationTarget,
+    callbackId: string,
+    messageId: number,
+    encodedModel: string,
+  ): Promise<void> {
+    if (this.isDedicatedTopicLocation(location)) {
+      this.stateStore.clearConversationComposeMode(location);
+      await this.telegram.answerCallbackQuery(callbackId, TOPIC_LOCKED_CALLBACK_TEXT);
+      return;
+    }
+
+    const context = this.stateStore.getConversationContext(location);
+    if (context.composeMode !== "new_session") {
+      await this.telegram.answerCallbackQuery(callbackId, "There is no pending new chat.");
+      return;
+    }
+
+    const workspaceId = context.composeWorkspaceId ?? context.activeWorkspaceId;
+    if (!workspaceId) {
+      await this.telegram.answerCallbackQuery(callbackId, "Select a repo and branch first.");
+      return;
+    }
+
+    let model: string;
+    try {
+      model = decodeURIComponent(encodedModel);
+    } catch {
+      model = encodedModel;
+    }
+
+    const defaults = this.registry.getSessionDefaults(workspaceId);
+    const modelOptions = Array.from(
+      new Set([
+        context.composeModel?.trim() || defaults.model,
+        ...this.registry.listModelOptionsForNewSession(workspaceId, NEW_SESSION_MODEL_LIMIT),
+      ]),
+    );
+    if (!modelOptions.includes(model)) {
+      await this.telegram.answerCallbackQuery(callbackId, "That model is no longer available.");
+      return;
+    }
+
+    if ((context.composeModel ?? defaults.model) === model) {
+      await this.telegram.answerCallbackQuery(callbackId, `Already using ${model}.`);
+      return;
+    }
+
+    this.stateStore.updateConversationContext(location, {
+      composeMode: "new_session",
+      composeWorkspaceId: workspaceId,
+      composeModel: model,
+      composeReasoningEffort:
+        context.composeReasoningEffort ?? this.registry.getCodexReasoningEffortForNewSession(workspaceId),
+    });
+    await this.telegram.answerCallbackQuery(callbackId, `Model set to ${model}.`);
+    await this.renderNewSessionComposer(
+      location,
+      workspaceId,
+      model,
+      context.composeReasoningEffort ?? this.registry.getCodexReasoningEffortForNewSession(workspaceId),
+      { messageId },
+    );
+  }
+
+  private async selectNewSessionReasoningEffort(
+    location: TelegramConversationTarget,
+    callbackId: string,
+    messageId: number,
+    encodedEffort: string,
+  ): Promise<void> {
+    if (this.isDedicatedTopicLocation(location)) {
+      this.stateStore.clearConversationComposeMode(location);
+      await this.telegram.answerCallbackQuery(callbackId, TOPIC_LOCKED_CALLBACK_TEXT);
+      return;
+    }
+
+    const context = this.stateStore.getConversationContext(location);
+    if (context.composeMode !== "new_session") {
+      await this.telegram.answerCallbackQuery(callbackId, "There is no pending new chat.");
+      return;
+    }
+
+    const workspaceId = context.composeWorkspaceId ?? context.activeWorkspaceId;
+    if (!workspaceId) {
+      await this.telegram.answerCallbackQuery(callbackId, "Select a repo and branch first.");
+      return;
+    }
+
+    const defaults = this.registry.getSessionDefaults(workspaceId);
+    if (defaults.agentType !== "codex") {
+      await this.telegram.answerCallbackQuery(callbackId, "Thinking level is only available for Codex chats.");
+      return;
+    }
+
+    let effort: string;
+    try {
+      effort = decodeURIComponent(encodedEffort);
+    } catch {
+      effort = encodedEffort;
+    }
+    if (!isReasoningEffort(effort)) {
+      await this.telegram.answerCallbackQuery(callbackId, "That thinking level is not available.");
+      return;
+    }
+
+    const selectedEffort =
+      context.composeReasoningEffort ?? this.registry.getCodexReasoningEffortForNewSession(workspaceId);
+    if (selectedEffort === effort) {
+      await this.telegram.answerCallbackQuery(callbackId, `Already using ${formatReasoningEffort(effort)}.`);
+      return;
+    }
+
+    this.stateStore.updateConversationContext(location, {
+      composeMode: "new_session",
+      composeWorkspaceId: workspaceId,
+      composeModel: context.composeModel?.trim() || defaults.model,
+      composeReasoningEffort: effort,
+    });
+    await this.telegram.answerCallbackQuery(callbackId, `Thinking level set to ${formatReasoningEffort(effort)}.`);
+    await this.renderNewSessionComposer(location, workspaceId, context.composeModel?.trim() || defaults.model, effort, {
+      messageId,
+    });
+  }
+
+  private async renderNewSessionComposer(
+    location: TelegramConversationTarget,
+    workspaceId: string,
+    selectedModel: string,
+    selectedReasoningEffort: string | null,
+    options?: { messageId?: number },
+  ): Promise<void> {
+    const modelOptions = Array.from(
+      new Set([selectedModel, ...this.registry.listModelOptionsForNewSession(workspaceId, NEW_SESSION_MODEL_LIMIT)]),
+    );
+    const effortOptions =
+      selectedReasoningEffort && isReasoningEffort(selectedReasoningEffort) ? [...NEW_SESSION_REASONING_EFFORTS] : [];
+    const text = [
+      "Send the first message to create a new chat on the current branch.",
+      `Model: ${selectedModel}`,
+      selectedReasoningEffort ? `Thinking: ${formatReasoningEffort(selectedReasoningEffort)}` : null,
+      modelOptions.length > 1 || effortOptions.length > 0
+        ? "Tap a button to switch model or thinking level before you send the first message."
+        : null,
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n");
+    const keyboard = newSessionModelKeyboard(modelOptions, selectedModel, effortOptions, selectedReasoningEffort);
+
+    if (options?.messageId) {
+      try {
+        await this.telegram.editMessageText(location.chatId, options.messageId, truncate(text, 3800), keyboard);
+        return;
+      } catch (error) {
+        if (isTelegramMessageNotModifiedError(error)) {
+          return;
+        }
+      }
+    }
+
+    await this.safeSendMessage(location, text, keyboard);
+  }
+
   private async showQueue(location: TelegramConversationTarget): Promise<void> {
     const session = this.resolveSelectedSession(location);
     if (!session) {
@@ -1344,6 +1565,7 @@ export class TelegramConductorBridge {
     fromQueue: boolean,
     options?: {
       allowMissingRollout?: boolean;
+      reasoningEffort?: string | null;
       suppressSentConfirmation?: boolean;
     },
   ): Promise<PromptSubmitResult> {
@@ -1379,6 +1601,7 @@ export class TelegramConductorBridge {
         threadId: session.claudeSessionId,
         cwd: workspacePath,
         model: session.model,
+        effort: options?.reasoningEffort ?? null,
         input: text,
       }));
     } catch (error) {
@@ -1464,6 +1687,11 @@ export class TelegramConductorBridge {
     }
 
     const defaults = this.registry.getSessionDefaults(workspaceId);
+    const model = context.composeModel?.trim() ? context.composeModel.trim() : defaults.model;
+    const reasoningEffort =
+      defaults.agentType === "codex" && context.composeReasoningEffort?.trim()
+        ? context.composeReasoningEffort.trim()
+        : null;
     const workspacePath = this.registry.resolveWorkspacePath(workspaceId);
     const title = sanitizeSessionTitle(text);
 
@@ -1476,12 +1704,12 @@ export class TelegramConductorBridge {
 
       threadId = await adapter.startThread({
         cwd: workspacePath,
-        model: defaults.model,
+        model,
       });
 
       const session = this.registry.createSession(workspaceId, threadId, {
         agentType: defaults.agentType,
-        model: defaults.model,
+        model,
         permissionMode: defaults.permissionMode,
         title,
       });
@@ -1511,6 +1739,7 @@ export class TelegramConductorBridge {
 
       await this.submitPrompt(sessionLocation, session, text, false, {
         allowMissingRollout: true,
+        reasoningEffort,
         suppressSentConfirmation: true,
       });
     } catch (error) {

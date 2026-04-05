@@ -31,6 +31,8 @@ export class BridgeStateStore {
         active_session_id TEXT,
         compose_mode TEXT NOT NULL DEFAULT 'none',
         compose_workspace_id TEXT,
+        compose_model TEXT,
+        compose_reasoning_effort TEXT,
         follow_session_id TEXT,
         compose_target_session_id TEXT,
         compose_target_thread_id TEXT,
@@ -81,6 +83,8 @@ export class BridgeStateStore {
         active_session_id TEXT,
         compose_mode TEXT NOT NULL DEFAULT 'none',
         compose_workspace_id TEXT,
+        compose_model TEXT,
+        compose_reasoning_effort TEXT,
         follow_session_id TEXT,
         compose_target_session_id TEXT,
         compose_target_thread_id TEXT,
@@ -101,6 +105,11 @@ export class BridgeStateStore {
       );
     `);
 
+    this.ensureColumn("chat_context", "compose_model", "TEXT");
+    this.ensureColumn("chat_context", "compose_reasoning_effort", "TEXT");
+    this.ensureColumn("conversation_context", "compose_model", "TEXT");
+    this.ensureColumn("conversation_context", "compose_reasoning_effort", "TEXT");
+
     this.db.exec(`
       INSERT OR IGNORE INTO conversation_context (
         location_key,
@@ -110,6 +119,8 @@ export class BridgeStateStore {
         active_session_id,
         compose_mode,
         compose_workspace_id,
+        compose_model,
+        compose_reasoning_effort,
         follow_session_id,
         compose_target_session_id,
         compose_target_thread_id,
@@ -124,6 +135,8 @@ export class BridgeStateStore {
         active_session_id,
         compose_mode,
         compose_workspace_id,
+        compose_model,
+        compose_reasoning_effort,
         follow_session_id,
         compose_target_session_id,
         compose_target_thread_id,
@@ -131,6 +144,14 @@ export class BridgeStateStore {
         updated_at
       FROM chat_context
     `);
+  }
+
+  private ensureColumn(tableName: string, columnName: string, columnSql: string): void {
+    const columns = this.db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>;
+    if (columns.some((column) => column.name === columnName)) {
+      return;
+    }
+    this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnSql}`);
   }
 
   getChatContext(chatId: number): ChatContext {
@@ -143,6 +164,8 @@ export class BridgeStateStore {
             active_session_id as activeSessionId,
             compose_mode as composeMode,
             compose_workspace_id as composeWorkspaceId,
+            compose_model as composeModel,
+            compose_reasoning_effort as composeReasoningEffort,
             follow_session_id as followSessionId,
             compose_target_session_id as composeTargetSessionId,
             compose_target_thread_id as composeTargetThreadId,
@@ -187,18 +210,22 @@ export class BridgeStateStore {
             active_session_id,
             compose_mode,
             compose_workspace_id,
+            compose_model,
+            compose_reasoning_effort,
             follow_session_id,
             compose_target_session_id,
             compose_target_thread_id,
             compose_target_turn_id,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(chat_id) DO UPDATE SET
             active_workspace_id = excluded.active_workspace_id,
             active_session_id = excluded.active_session_id,
             compose_mode = excluded.compose_mode,
             compose_workspace_id = excluded.compose_workspace_id,
+            compose_model = excluded.compose_model,
+            compose_reasoning_effort = excluded.compose_reasoning_effort,
             follow_session_id = excluded.follow_session_id,
             compose_target_session_id = excluded.compose_target_session_id,
             compose_target_thread_id = excluded.compose_target_thread_id,
@@ -212,6 +239,8 @@ export class BridgeStateStore {
         merged.activeSessionId,
         merged.composeMode,
         merged.composeWorkspaceId,
+        merged.composeModel ?? null,
+        merged.composeReasoningEffort ?? null,
         merged.followSessionId,
         merged.composeTargetSessionId,
         merged.composeTargetThreadId,
@@ -235,6 +264,8 @@ export class BridgeStateStore {
     composeMode: ComposeMode,
     options?: {
       composeWorkspaceId?: string | null;
+      composeModel?: string | null;
+      composeReasoningEffort?: string | null;
       composeTargetSessionId?: string | null;
       composeTargetThreadId?: string | null;
       composeTargetTurnId?: string | null;
@@ -243,6 +274,8 @@ export class BridgeStateStore {
     return this.updateChatContext(chatId, {
       composeMode,
       composeWorkspaceId: options?.composeWorkspaceId ?? null,
+      composeModel: options?.composeModel ?? null,
+      composeReasoningEffort: options?.composeReasoningEffort ?? null,
       composeTargetSessionId: options?.composeTargetSessionId ?? null,
       composeTargetThreadId: options?.composeTargetThreadId ?? null,
       composeTargetTurnId: options?.composeTargetTurnId ?? null,
@@ -253,6 +286,8 @@ export class BridgeStateStore {
     return this.updateChatContext(chatId, {
       composeMode: "none",
       composeWorkspaceId: null,
+      composeModel: null,
+      composeReasoningEffort: null,
       composeTargetSessionId: null,
       composeTargetThreadId: null,
       composeTargetTurnId: null,
@@ -271,6 +306,8 @@ export class BridgeStateStore {
             active_session_id as activeSessionId,
             compose_mode as composeMode,
             compose_workspace_id as composeWorkspaceId,
+            compose_model as composeModel,
+            compose_reasoning_effort as composeReasoningEffort,
             follow_session_id as followSessionId,
             compose_target_session_id as composeTargetSessionId,
             compose_target_thread_id as composeTargetThreadId,
@@ -328,18 +365,22 @@ export class BridgeStateStore {
             active_session_id,
             compose_mode,
             compose_workspace_id,
+            compose_model,
+            compose_reasoning_effort,
             follow_session_id,
             compose_target_session_id,
             compose_target_thread_id,
             compose_target_turn_id,
             updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(location_key) DO UPDATE SET
             active_workspace_id = excluded.active_workspace_id,
             active_session_id = excluded.active_session_id,
             compose_mode = excluded.compose_mode,
             compose_workspace_id = excluded.compose_workspace_id,
+            compose_model = excluded.compose_model,
+            compose_reasoning_effort = excluded.compose_reasoning_effort,
             follow_session_id = excluded.follow_session_id,
             compose_target_session_id = excluded.compose_target_session_id,
             compose_target_thread_id = excluded.compose_target_thread_id,
@@ -355,6 +396,8 @@ export class BridgeStateStore {
         merged.activeSessionId,
         merged.composeMode,
         merged.composeWorkspaceId,
+        merged.composeModel ?? null,
+        merged.composeReasoningEffort ?? null,
         merged.followSessionId,
         merged.composeTargetSessionId,
         merged.composeTargetThreadId,
@@ -387,6 +430,8 @@ export class BridgeStateStore {
     composeMode: ComposeMode,
     options?: {
       composeWorkspaceId?: string | null;
+      composeModel?: string | null;
+      composeReasoningEffort?: string | null;
       composeTargetSessionId?: string | null;
       composeTargetThreadId?: string | null;
       composeTargetTurnId?: string | null;
@@ -395,6 +440,8 @@ export class BridgeStateStore {
     return this.updateConversationContext(target, {
       composeMode,
       composeWorkspaceId: options?.composeWorkspaceId ?? null,
+      composeModel: options?.composeModel ?? null,
+      composeReasoningEffort: options?.composeReasoningEffort ?? null,
       composeTargetSessionId: options?.composeTargetSessionId ?? null,
       composeTargetThreadId: options?.composeTargetThreadId ?? null,
       composeTargetTurnId: options?.composeTargetTurnId ?? null,
@@ -405,6 +452,8 @@ export class BridgeStateStore {
     return this.updateConversationContext(target, {
       composeMode: "none",
       composeWorkspaceId: null,
+      composeModel: null,
+      composeReasoningEffort: null,
       composeTargetSessionId: null,
       composeTargetThreadId: null,
       composeTargetTurnId: null,

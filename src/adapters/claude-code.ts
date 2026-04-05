@@ -19,6 +19,7 @@ interface StartTurnOptions {
   input: string;
   cwd?: string | null;
   model?: string | null;
+  effort?: string | null;
 }
 
 interface InterruptTurnOptions {

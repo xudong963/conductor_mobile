@@ -95,11 +95,20 @@ function createBridge() {
     updateSessionStatus: vi.fn(),
   };
   const registry = {
+    createSession: vi.fn(),
     createWorkspace: vi.fn(),
     findWorkspaceByBranch: vi.fn(),
     getRepositoryById: vi.fn(),
+    getSessionDefaults: vi.fn().mockReturnValue({
+      agentType: "codex",
+      model: "gpt-5.4",
+      permissionMode: "default",
+    }),
+    getCodexReasoningEffortForNewSession: vi.fn().mockReturnValue("xhigh"),
     findSessionByThreadId: vi.fn(),
     getSessionById: vi.fn(),
+    listModelOptionsForNewSession: vi.fn().mockReturnValue(["gpt-5.4"]),
+    resolveWorkspacePath: vi.fn().mockReturnValue("/tmp/workspace-1"),
     updateWorkspaceActiveSession: vi.fn(),
     getWorkspaceById: vi.fn(),
   };
@@ -1608,6 +1617,179 @@ describe("TelegramConductorBridge", () => {
     );
   });
 
+  it("shows a model picker before the first message of a new chat", async () => {
+    const { bridge, registry, stateStore, telegram } = createBridge();
+
+    stateStore.getConversationContext.mockReturnValue({
+      activeWorkspaceId: "workspace-1",
+      composeWorkspaceId: null,
+    });
+    registry.listModelOptionsForNewSession.mockReturnValue(["gpt-5.4", "gpt-5.3-codex"]);
+
+    await (
+      bridge as unknown as {
+        handleCommand: (location: { chatId: number; messageThreadId: number | null }, command: string) => Promise<void>;
+      }
+    ).handleCommand({ chatId: 99, messageThreadId: null }, "/new");
+
+    expect(stateStore.setConversationComposeMode).toHaveBeenCalledWith(
+      { chatId: 99, messageThreadId: null },
+      "new_session",
+      {
+        composeWorkspaceId: "workspace-1",
+        composeModel: "gpt-5.4",
+        composeReasoningEffort: "xhigh",
+      },
+    );
+
+    expect(telegram.sendMessage).toHaveBeenCalledTimes(1);
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Model: gpt-5.4");
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("Thinking: Extra High");
+    expect(telegram.sendMessage.mock.calls[0]?.[1]).toContain("switch model or thinking level");
+    expect(telegram.sendMessage.mock.calls[0]?.[2]).toMatchObject({
+      reply_markup: {
+        inline_keyboard: expect.arrayContaining([
+          expect.arrayContaining([
+            expect.objectContaining({ callback_data: "new-model:gpt-5.4" }),
+            expect.objectContaining({ callback_data: "new-model:gpt-5.3-codex" }),
+          ]),
+          expect.arrayContaining([expect.objectContaining({ callback_data: "new-effort:xhigh" })]),
+          [expect.objectContaining({ callback_data: "new:cancel" })],
+        ]),
+      },
+    });
+  });
+
+  it("updates the pending new-chat model from the inline buttons", async () => {
+    const { bridge, registry, stateStore, telegram } = createBridge();
+
+    stateStore.getConversationContext.mockReturnValue({
+      activeWorkspaceId: "workspace-1",
+      activeSessionId: null,
+      chatId: 99,
+      composeMode: "new_session",
+      composeModel: "gpt-5.4",
+      composeReasoningEffort: "xhigh",
+      composeTargetSessionId: null,
+      composeTargetThreadId: null,
+      composeTargetTurnId: null,
+      composeWorkspaceId: "workspace-1",
+      followSessionId: null,
+      messageThreadId: null,
+      updatedAt: "2026-03-31T00:00:00.000Z",
+    });
+    registry.listModelOptionsForNewSession.mockReturnValue(["gpt-5.4", "gpt-5.3-codex"]);
+
+    await (
+      bridge as unknown as {
+        handleCallback: (callback: {
+          id: string;
+          data: string;
+          from: { first_name: string; id: number; is_bot: boolean };
+          message: {
+            chat: { id: number; type: string };
+            date: number;
+            message_id: number;
+            text?: string;
+          };
+        }) => Promise<void>;
+      }
+    ).handleCallback({
+      id: "callback-model",
+      data: "new-model:gpt-5.3-codex",
+      from: { first_name: "Tester", id: 99, is_bot: false },
+      message: {
+        chat: { id: 99, type: "private" },
+        date: 0,
+        message_id: 7,
+        text: "button",
+      },
+    });
+    await flushBackgroundTasks(bridge);
+
+    expect(stateStore.updateConversationContext).toHaveBeenCalledWith(
+      { chatId: 99, messageThreadId: null },
+      {
+        composeMode: "new_session",
+        composeWorkspaceId: "workspace-1",
+        composeModel: "gpt-5.3-codex",
+        composeReasoningEffort: "xhigh",
+      },
+    );
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith("callback-model", "Model set to gpt-5.3-codex.");
+    expect(telegram.editMessageText).toHaveBeenCalledWith(
+      99,
+      7,
+      expect.stringContaining("Model: gpt-5.3-codex"),
+      expect.any(Array),
+    );
+  });
+
+  it("updates the pending new-chat thinking level from the inline buttons", async () => {
+    const { bridge, registry, stateStore, telegram } = createBridge();
+
+    stateStore.getConversationContext.mockReturnValue({
+      activeWorkspaceId: "workspace-1",
+      activeSessionId: null,
+      chatId: 99,
+      composeMode: "new_session",
+      composeModel: "gpt-5.4",
+      composeReasoningEffort: "xhigh",
+      composeTargetSessionId: null,
+      composeTargetThreadId: null,
+      composeTargetTurnId: null,
+      composeWorkspaceId: "workspace-1",
+      followSessionId: null,
+      messageThreadId: null,
+      updatedAt: "2026-03-31T00:00:00.000Z",
+    });
+
+    await (
+      bridge as unknown as {
+        handleCallback: (callback: {
+          id: string;
+          data: string;
+          from: { first_name: string; id: number; is_bot: boolean };
+          message: {
+            chat: { id: number; type: string };
+            date: number;
+            message_id: number;
+            text?: string;
+          };
+        }) => Promise<void>;
+      }
+    ).handleCallback({
+      id: "callback-effort",
+      data: "new-effort:high",
+      from: { first_name: "Tester", id: 99, is_bot: false },
+      message: {
+        chat: { id: 99, type: "private" },
+        date: 0,
+        message_id: 7,
+        text: "button",
+      },
+    });
+    await flushBackgroundTasks(bridge);
+
+    expect(stateStore.updateConversationContext).toHaveBeenCalledWith(
+      { chatId: 99, messageThreadId: null },
+      {
+        composeMode: "new_session",
+        composeWorkspaceId: "workspace-1",
+        composeModel: "gpt-5.4",
+        composeReasoningEffort: "high",
+      },
+    );
+    expect(telegram.answerCallbackQuery).toHaveBeenCalledWith("callback-effort", "Thinking level set to High.");
+    expect(telegram.editMessageText).toHaveBeenCalledWith(
+      99,
+      7,
+      expect.stringContaining("Thinking: High"),
+      expect.any(Array),
+    );
+    expect(registry.getSessionDefaults).toHaveBeenCalledWith("workspace-1");
+  });
+
   it("creates a workspace from compose mode and switches to it", async () => {
     const { bridge, registry, stateStore } = createBridge();
     const selectBranch = vi.fn().mockResolvedValue(undefined);
@@ -1644,6 +1826,71 @@ describe("TelegramConductorBridge", () => {
     expect(selectBranch).toHaveBeenCalledWith({ chatId: 99, messageThreadId: null }, "workspace-2", {
       prefix: "Created workspace: berlin",
     });
+  });
+
+  it("uses the selected compose model when creating a new chat", async () => {
+    const { bridge, codex, registry, stateStore } = createBridge();
+    const ensureSessionTopicLocation = vi.fn().mockResolvedValue(null);
+    const submitPrompt = vi.fn().mockResolvedValue("submitted");
+
+    stateStore.getConversationContext.mockReturnValue({
+      activeWorkspaceId: "workspace-1",
+      activeSessionId: null,
+      chatId: 99,
+      composeMode: "new_session",
+      composeModel: "gpt-5.3-codex",
+      composeReasoningEffort: "high",
+      composeTargetSessionId: null,
+      composeTargetThreadId: null,
+      composeTargetTurnId: null,
+      composeWorkspaceId: "workspace-1",
+      followSessionId: null,
+      messageThreadId: null,
+      updatedAt: "2026-03-31T00:00:00.000Z",
+    });
+    registry.createSession.mockReturnValue({
+      id: "session-1",
+      workspaceId: "workspace-1",
+      status: "idle",
+      agentType: "codex",
+      model: "gpt-5.3-codex",
+      permissionMode: "default",
+      title: "Draft kickoff",
+      claudeSessionId: "thread-1",
+      updatedAt: "2026-03-31T00:00:00.000Z",
+      lastUserMessageAt: null,
+    });
+    (
+      bridge as unknown as { ensureSessionTopicLocation: typeof ensureSessionTopicLocation }
+    ).ensureSessionTopicLocation = ensureSessionTopicLocation;
+    (bridge as unknown as { submitPrompt: typeof submitPrompt }).submitPrompt = submitPrompt;
+
+    await (
+      bridge as unknown as {
+        createNewSession: (location: { chatId: number; messageThreadId: number | null }, text: string) => Promise<void>;
+      }
+    ).createNewSession({ chatId: 99, messageThreadId: null }, "Draft kickoff");
+
+    expect(codex.startThread).toHaveBeenCalledWith({
+      cwd: "/tmp/workspace-1",
+      model: "gpt-5.3-codex",
+    });
+    expect(registry.createSession).toHaveBeenCalledWith(
+      "workspace-1",
+      "thread-1",
+      expect.objectContaining({
+        model: "gpt-5.3-codex",
+      }),
+    );
+    expect(submitPrompt).toHaveBeenCalledWith(
+      { chatId: 99, messageThreadId: null },
+      expect.objectContaining({ id: "session-1" }),
+      "Draft kickoff",
+      false,
+      expect.objectContaining({
+        reasoningEffort: "high",
+      }),
+    );
   });
 
   it("switches to an existing workspace instead of creating a duplicate", async () => {

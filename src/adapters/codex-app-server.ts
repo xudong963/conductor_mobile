@@ -36,6 +36,7 @@ interface StartTurnOptions {
   input: string;
   cwd?: string | null;
   model?: string | null;
+  effort?: string | null;
 }
 
 interface SteerTurnOptions {
@@ -230,6 +231,7 @@ export class CodexAppServerAdapter extends EventEmitter {
       threadId: options.threadId,
       cwd: options.cwd ?? null,
       model: options.model ?? null,
+      effort: options.effort ?? null,
       input: [{ type: "text", text: options.input }],
     })) as { turn?: { id?: string } };
 
