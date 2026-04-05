@@ -645,6 +645,10 @@ export class ConductorRegistryAdapter {
 
   createSession(workspaceId: string, threadId: string, seed: SessionSeed): ConductorSessionRef {
     const sessionId = randomUUID();
+    const normalizedThinkingLevel = seed.codexThinkingLevel?.trim() || "xhigh";
+    const thinkingEnabled = normalizedThinkingLevel === "none" ? 0 : 1;
+    const storedThinkingLevel = thinkingEnabled === 0 ? null : normalizedThinkingLevel;
+    const agentPersonality = seed.agentPersonality?.trim() || "none";
 
     const tx = this.db.transaction(() => {
       this.db
@@ -660,13 +664,27 @@ export class ConductorRegistryAdapter {
               permission_mode,
               title,
               last_user_message_at,
+              codex_thinking_level,
+              thinking_enabled,
+              agent_personality,
               created_at,
               updated_at
             )
-            VALUES (?, 'idle', ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))
+            VALUES (?, 'idle', ?, ?, ?, ?, ?, ?, datetime('now'), ?, ?, ?, datetime('now'), datetime('now'))
           `,
         )
-        .run(sessionId, threadId, workspaceId, seed.agentType ?? "codex", seed.model, seed.permissionMode, seed.title);
+        .run(
+          sessionId,
+          threadId,
+          workspaceId,
+          seed.agentType ?? "codex",
+          seed.model,
+          seed.permissionMode,
+          seed.title,
+          storedThinkingLevel,
+          thinkingEnabled,
+          agentPersonality,
+        );
 
       this.db
         .prepare(

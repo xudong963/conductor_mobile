@@ -1880,6 +1880,8 @@ describe("TelegramConductorBridge", () => {
       "thread-1",
       expect.objectContaining({
         model: "gpt-5.3-codex",
+        codexThinkingLevel: "high",
+        agentPersonality: "none",
       }),
     );
     expect(submitPrompt).toHaveBeenCalledWith(

@@ -50,6 +50,39 @@ interface InterruptTurnOptions {
   turnId: string;
 }
 
+const DEFAULT_CODEX_FEATURE_FLAGS = {
+  "features.enable_request_compression": true,
+  "features.collaboration_modes": true,
+  "features.personality": true,
+  "features.request_rule": true,
+  "features.fast_mode": true,
+} as const;
+
+function withOptionalFields(
+  base: Record<string, unknown>,
+  optional: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...base,
+    ...Object.fromEntries(Object.entries(optional).filter(([, value]) => value !== null && value !== undefined)),
+  };
+}
+
+function buildTextInput(text: string): Array<{ type: "text"; text: string; text_elements: [] }> {
+  return [{ type: "text", text, text_elements: [] }];
+}
+
+function buildCollaborationMode(model?: string | null, effort?: string | null): Record<string, unknown> {
+  return {
+    mode: "default",
+    settings: {
+      model: model ?? null,
+      reasoning_effort: effort ?? null,
+      developer_instructions: null,
+    },
+  };
+}
+
 const BRIDGE_ONLY_ENV_KEYS = [
   "BRIDGE_DB_PATH",
   "BRIDGE_ENV_PATH",
@@ -141,6 +174,7 @@ export class CodexAppServerAdapter extends EventEmitter {
           experimentalApi: true,
         },
       });
+      await this.writeJsonRpcMessage({ jsonrpc: "2.0", method: "initialized" });
     } catch (error) {
       if (this.process === child) {
         child.kill("SIGTERM");
@@ -158,12 +192,24 @@ export class CodexAppServerAdapter extends EventEmitter {
   }
 
   async startThread(options: StartThreadOptions): Promise<string> {
-    const result = (await this.request("thread/start", {
-      cwd: options.cwd,
-      model: options.model,
-      approvalPolicy: "never",
-      sandbox: "danger-full-access",
-    })) as { thread?: { id?: string } };
+    const result = (await this.request(
+      "thread/start",
+      withOptionalFields(
+        {
+          experimentalRawEvents: false,
+          persistExtendedHistory: true,
+          serviceTier: null,
+          sandbox: "danger-full-access",
+          approvalPolicy: "never",
+          personality: null,
+          config: DEFAULT_CODEX_FEATURE_FLAGS,
+        },
+        {
+          cwd: options.cwd,
+          model: options.model,
+        },
+      ),
+    )) as { thread?: { id?: string } };
     const threadId = result?.thread?.id;
     if (!threadId) {
       throw new Error(`thread/start did not return thread.id: ${JSON.stringify(result)}`);
@@ -173,13 +219,23 @@ export class CodexAppServerAdapter extends EventEmitter {
 
   async resumeThread(options: ResumeThreadOptions): Promise<void> {
     try {
-      await this.request("thread/resume", {
-        threadId: options.threadId,
-        cwd: options.cwd ?? null,
-        model: options.model ?? null,
-        approvalPolicy: "never",
-        sandbox: "danger-full-access",
-      });
+      await this.request(
+        "thread/resume",
+        withOptionalFields(
+          {
+            threadId: options.threadId,
+            persistExtendedHistory: true,
+            serviceTier: null,
+            sandbox: "danger-full-access",
+            approvalPolicy: "never",
+            personality: null,
+          },
+          {
+            cwd: options.cwd,
+            model: options.model,
+          },
+        ),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (options.allowMissingRollout && message.includes("no rollout found for thread id")) {
@@ -227,13 +283,24 @@ export class CodexAppServerAdapter extends EventEmitter {
   }
 
   async startTurn(options: StartTurnOptions): Promise<{ turnId: string }> {
-    const response = (await this.request("turn/start", {
-      threadId: options.threadId,
-      cwd: options.cwd ?? null,
-      model: options.model ?? null,
-      effort: options.effort ?? null,
-      input: [{ type: "text", text: options.input }],
-    })) as { turn?: { id?: string } };
+    const response = (await this.request(
+      "turn/start",
+      withOptionalFields(
+        {
+          threadId: options.threadId,
+          input: buildTextInput(options.input),
+          serviceTier: null,
+          summary: "none",
+          sandboxPolicy: { type: "dangerFullAccess" },
+          personality: null,
+          collaborationMode: buildCollaborationMode(options.model, options.effort),
+        },
+        {
+          model: options.model,
+          effort: options.effort,
+        },
+      ),
+    )) as { turn?: { id?: string } };
 
     const turnId = response?.turn?.id;
     if (!turnId) {
@@ -246,7 +313,7 @@ export class CodexAppServerAdapter extends EventEmitter {
     await this.request("turn/steer", {
       threadId: options.threadId,
       expectedTurnId: options.expectedTurnId,
-      input: [{ type: "text", text: options.input }],
+      input: buildTextInput(options.input),
     });
   }
 
