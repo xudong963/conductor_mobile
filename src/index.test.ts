@@ -1860,8 +1860,9 @@ describe("TelegramConductorBridge", () => {
       updatedAt: "2026-03-31T00:00:00.000Z",
       lastUserMessageAt: null,
     });
-    (bridge as unknown as { ensureSessionTopicLocation: typeof ensureSessionTopicLocation }).ensureSessionTopicLocation =
-      ensureSessionTopicLocation;
+    (
+      bridge as unknown as { ensureSessionTopicLocation: typeof ensureSessionTopicLocation }
+    ).ensureSessionTopicLocation = ensureSessionTopicLocation;
     (bridge as unknown as { submitPrompt: typeof submitPrompt }).submitPrompt = submitPrompt;
 
     await (

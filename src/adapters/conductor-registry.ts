@@ -496,9 +496,7 @@ export class ConductorRegistryAdapter {
     return Array.from(
       new Set([
         defaults.model,
-        ...rows
-          .map((row) => row.model?.trim() ?? "")
-          .filter((model): model is string => model.length > 0),
+        ...rows.map((row) => row.model?.trim() ?? "").filter((model): model is string => model.length > 0),
       ]),
     );
   }

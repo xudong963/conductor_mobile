@@ -1341,7 +1341,8 @@ export class TelegramConductorBridge {
       composeMode: "new_session",
       composeWorkspaceId: workspaceId,
       composeModel: model,
-      composeReasoningEffort: context.composeReasoningEffort ?? this.registry.getCodexReasoningEffortForNewSession(workspaceId),
+      composeReasoningEffort:
+        context.composeReasoningEffort ?? this.registry.getCodexReasoningEffortForNewSession(workspaceId),
     });
     await this.telegram.answerCallbackQuery(callbackId, `Model set to ${model}.`);
     await this.renderNewSessionComposer(
@@ -1394,7 +1395,8 @@ export class TelegramConductorBridge {
       return;
     }
 
-    const selectedEffort = context.composeReasoningEffort ?? this.registry.getCodexReasoningEffortForNewSession(workspaceId);
+    const selectedEffort =
+      context.composeReasoningEffort ?? this.registry.getCodexReasoningEffortForNewSession(workspaceId);
     if (selectedEffort === effort) {
       await this.telegram.answerCallbackQuery(callbackId, `Already using ${formatReasoningEffort(effort)}.`);
       return;
@@ -1407,13 +1409,9 @@ export class TelegramConductorBridge {
       composeReasoningEffort: effort,
     });
     await this.telegram.answerCallbackQuery(callbackId, `Thinking level set to ${formatReasoningEffort(effort)}.`);
-    await this.renderNewSessionComposer(
-      location,
-      workspaceId,
-      context.composeModel?.trim() || defaults.model,
-      effort,
-      { messageId },
-    );
+    await this.renderNewSessionComposer(location, workspaceId, context.composeModel?.trim() || defaults.model, effort, {
+      messageId,
+    });
   }
 
   private async renderNewSessionComposer(
