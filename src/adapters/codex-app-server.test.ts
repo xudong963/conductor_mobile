@@ -85,7 +85,9 @@ describe("CodexAppServerAdapter", () => {
     };
 
     expect(initializePayload.method).toBe("initialize");
-    (child.stdout as PassThrough).write(`${JSON.stringify({ jsonrpc: "2.0", id: initializePayload.id, result: {} })}\n`);
+    (child.stdout as PassThrough).write(
+      `${JSON.stringify({ jsonrpc: "2.0", id: initializePayload.id, result: {} })}\n`,
+    );
 
     await expect(startPromise).resolves.toBeUndefined();
 

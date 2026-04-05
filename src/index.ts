@@ -1690,7 +1690,7 @@ export class TelegramConductorBridge {
     const model = context.composeModel?.trim() ? context.composeModel.trim() : defaults.model;
     const reasoningEffort =
       defaults.agentType === "codex"
-        ? (context.composeReasoningEffort?.trim() || this.registry.getCodexReasoningEffortForNewSession(workspaceId))
+        ? context.composeReasoningEffort?.trim() || this.registry.getCodexReasoningEffortForNewSession(workspaceId)
         : null;
     const workspacePath = this.registry.resolveWorkspacePath(workspaceId);
     const title = sanitizeSessionTitle(text);

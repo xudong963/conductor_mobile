@@ -58,10 +58,7 @@ const DEFAULT_CODEX_FEATURE_FLAGS = {
   "features.fast_mode": true,
 } as const;
 
-function withOptionalFields(
-  base: Record<string, unknown>,
-  optional: Record<string, unknown>,
-): Record<string, unknown> {
+function withOptionalFields(base: Record<string, unknown>, optional: Record<string, unknown>): Record<string, unknown> {
   return {
     ...base,
     ...Object.fromEntries(Object.entries(optional).filter(([, value]) => value !== null && value !== undefined)),
