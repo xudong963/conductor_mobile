@@ -1689,8 +1689,8 @@ export class TelegramConductorBridge {
     const defaults = this.registry.getSessionDefaults(workspaceId);
     const model = context.composeModel?.trim() ? context.composeModel.trim() : defaults.model;
     const reasoningEffort =
-      defaults.agentType === "codex" && context.composeReasoningEffort?.trim()
-        ? context.composeReasoningEffort.trim()
+      defaults.agentType === "codex"
+        ? context.composeReasoningEffort?.trim() || this.registry.getCodexReasoningEffortForNewSession(workspaceId)
         : null;
     const workspacePath = this.registry.resolveWorkspacePath(workspaceId);
     const title = sanitizeSessionTitle(text);
@@ -1712,6 +1712,8 @@ export class TelegramConductorBridge {
         model,
         permissionMode: defaults.permissionMode,
         title,
+        codexThinkingLevel: reasoningEffort,
+        agentPersonality: "none",
       });
 
       this.sessionIdByThreadId.set(threadId, session.id);

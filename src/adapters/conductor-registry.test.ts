@@ -36,8 +36,17 @@ function createRegistryFixture(): {
       id TEXT PRIMARY KEY,
       workspace_id TEXT,
       status TEXT,
+      agent_type TEXT,
+      model TEXT,
+      permission_mode TEXT,
       title TEXT,
+      claude_session_id TEXT,
       last_user_message_at TEXT,
+      codex_thinking_level TEXT,
+      thinking_enabled INTEGER DEFAULT 1,
+      agent_personality TEXT,
+      created_at TEXT,
+      updated_at TEXT,
       is_hidden INTEGER DEFAULT 0
     );
 
@@ -463,5 +472,140 @@ describe("ConductorRegistryAdapter", () => {
 
     const other = adapter.createWorkspace("repo-1", "demo/berlin");
     expect(other.directoryName).toBe("berlin-v1");
+  });
+
+  it("defaults new sessions to desktop-compatible thinking fields", () => {
+    const { adapter, db } = createRegistryFixture();
+
+    db.prepare(
+      `
+        INSERT INTO workspaces (
+          id,
+          repository_id,
+          directory_name,
+          branch,
+          active_session_id,
+          created_at,
+          updated_at,
+          state
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+    ).run(
+      "workspace-1",
+      "repo-1",
+      "telegram-bridge",
+      "master",
+      null,
+      "2026-03-29T04:00:00.000Z",
+      "2026-03-29T04:00:00.000Z",
+      "ready",
+    );
+
+    const session = adapter.createSession("workspace-1", "thread-1", {
+      agentType: "codex",
+      model: "gpt-5.4",
+      permissionMode: "default",
+      title: "Fix freeze",
+    });
+
+    const row = db
+      .prepare(
+        `
+          SELECT
+            claude_session_id as claudeSessionId,
+            codex_thinking_level as codexThinkingLevel,
+            thinking_enabled as thinkingEnabled,
+            agent_personality as agentPersonality
+          FROM sessions
+          WHERE id = ?
+        `,
+      )
+      .get(session.id) as
+      | {
+          claudeSessionId: string;
+          codexThinkingLevel: string | null;
+          thinkingEnabled: number;
+          agentPersonality: string | null;
+        }
+      | undefined;
+    const workspaceRow = db
+      .prepare(
+        `
+          SELECT active_session_id as activeSessionId
+          FROM workspaces
+          WHERE id = ?
+        `,
+      )
+      .get("workspace-1") as { activeSessionId: string | null } | undefined;
+
+    expect(row).toEqual({
+      claudeSessionId: "thread-1",
+      codexThinkingLevel: "xhigh",
+      thinkingEnabled: 1,
+      agentPersonality: "none",
+    });
+    expect(workspaceRow?.activeSessionId).toBe(session.id);
+  });
+
+  it("stores thinking-disabled sessions without leaking null personality", () => {
+    const { adapter, db } = createRegistryFixture();
+
+    db.prepare(
+      `
+        INSERT INTO workspaces (
+          id,
+          repository_id,
+          directory_name,
+          branch,
+          active_session_id,
+          created_at,
+          updated_at,
+          state
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+    ).run(
+      "workspace-1",
+      "repo-1",
+      "telegram-bridge",
+      "master",
+      null,
+      "2026-03-29T04:00:00.000Z",
+      "2026-03-29T04:00:00.000Z",
+      "ready",
+    );
+
+    const session = adapter.createSession("workspace-1", "thread-2", {
+      agentType: "codex",
+      model: "gpt-5.4",
+      permissionMode: "default",
+      title: "No thinking",
+      codexThinkingLevel: "none",
+      agentPersonality: "none",
+    });
+
+    const row = db
+      .prepare(
+        `
+          SELECT
+            codex_thinking_level as codexThinkingLevel,
+            thinking_enabled as thinkingEnabled,
+            agent_personality as agentPersonality
+          FROM sessions
+          WHERE id = ?
+        `,
+      )
+      .get(session.id) as
+      | {
+          codexThinkingLevel: string | null;
+          thinkingEnabled: number;
+          agentPersonality: string | null;
+        }
+      | undefined;
+
+    expect(row).toEqual({
+      codexThinkingLevel: null,
+      thinkingEnabled: 0,
+      agentPersonality: "none",
+    });
   });
 });

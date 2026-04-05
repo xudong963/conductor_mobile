@@ -109,6 +109,8 @@ export interface SessionSeed {
   permissionMode: string;
   title: string;
   agentType?: SupportedAgentType;
+  codexThinkingLevel?: string | null;
+  agentPersonality?: string | null;
 }
 
 export interface SessionDefaults {
